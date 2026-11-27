@@ -20,7 +20,7 @@ export const config = {
           android: 'http://10.0.2.2:3000', // Android emulator → host machine
           default: 'http://localhost:3000',
         })
-      : 'https://api.your-domain.com'), // TODO: set API_URL to your deployed backend (HTTPS only)
+      : 'https://my-expences-mocha.vercel.app'), // Deployed backend (Vercel)
 
   google: {
     /** "Web application" client ID: Google issues the ID token for it, and the backend checks it (GOOGLE_CLIENT_IDS). */
