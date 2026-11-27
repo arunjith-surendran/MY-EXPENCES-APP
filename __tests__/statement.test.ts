@@ -113,3 +113,40 @@ describe('cleanMerchant', () => {
     ).toBe('Starbucks Dubai Mall');
   });
 });
+
+describe('more statement layouts', () => {
+  it('reads table rows rebuilt from the PDF layout', () => {
+    const text = [
+      'Date   Description   Debit   Credit   Balance',
+      'Opening Balance   5,000.00',
+      '03/11/2026   CARREFOUR MOE DUBAI   245.50      4,754.50',
+      '04/11/2026   SALARY NOV         12,000.00   16,754.50',
+      '05/11/2026   ENOC 1023 DUBAI   80.00      16,674.50',
+    ].join('\n');
+    const txns = parseStatement(text);
+    expect(txns.map(x => [x.amount, x.kind])).toEqual([
+      [245.5, 'debit'],
+      [12000, 'credit'],
+      [80, 'debit'],
+    ]);
+  });
+
+  it('reads compact dates like 05NOV26', () => {
+    const txns = parseStatement(
+      '05NOV26 TALABAT DUBAI 54.00\n06NOV26 NOON.COM 120.00',
+    );
+    expect(txns).toHaveLength(2);
+    expect(new Date(txns[0].date).getMonth()).toBe(10);
+  });
+
+  it('reads card statements without a year, using the statement year', () => {
+    const text = [
+      'Statement period 01/10/2025 - 31/10/2025',
+      '05 Oct   STARBUCKS MALL OF EMIRATES   32.00',
+      '17 Oct   ADNOC 554   150.25',
+    ].join('\n');
+    const txns = parseStatement(text);
+    expect(txns.map(x => x.amount)).toEqual([32, 150.25]);
+    expect(new Date(txns[0].date).getFullYear()).toBe(2025);
+  });
+});

@@ -22,6 +22,7 @@ import Svg, { Circle, Path } from 'react-native-svg';
 
 import type { RootStackParamList } from '../../App';
 import { Chip, DayStepper } from '../components/FilterControls';
+import { listReceiptIds } from '../lib/receipts';
 import {
   type Expense,
   type ExpenseSearch,
@@ -46,6 +47,7 @@ import {
   shortDay,
 } from '../lib/periods';
 import { cardShadow, categoryStyle, useTheme } from '../lib/theme';
+import { useFeatureUse, useTrackFeature } from '../lib/usage';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Search'>;
 
@@ -73,6 +75,8 @@ const SORTS: [Sort, string][] = [
  */
 export default function SearchScreen({ navigation, route }: Props) {
   const t = useTheme();
+  useFeatureUse('search');
+  const track = useTrackFeature();
   const presetMonth = route.params?.month;
 
   const [text, setText] = useState('');
@@ -90,6 +94,7 @@ export default function SearchScreen({ navigation, route }: Props) {
   );
   const [tags, setTags] = useState<Set<string>>(new Set());
   const [allTags, setAllTags] = useState<string[]>([]);
+  const [receiptIds, setReceiptIds] = useState<Set<number>>(new Set());
   const [method, setMethod] = useState<Method>('any');
   const [sources, setSources] = useState<Set<Source>>(new Set());
   const [minText, setMinText] = useState('');
@@ -159,6 +164,9 @@ export default function SearchScreen({ navigation, route }: Props) {
       listTags()
         .then(setAllTags)
         .catch(() => {});
+      listReceiptIds()
+        .then(setReceiptIds)
+        .catch(() => {});
       firstExpenseAt()
         .then(setFirstAt)
         .catch(() => {});
@@ -202,6 +210,7 @@ export default function SearchScreen({ navigation, route }: Props) {
       .filter(Boolean)
       .join(' · ');
     try {
+      track('export');
       await Share.share({
         title: `Expenses · ${what}`,
         message: toCsv(results),
@@ -209,7 +218,7 @@ export default function SearchScreen({ navigation, route }: Props) {
     } catch (err) {
       Alert.alert("Couldn't export", String(err));
     }
-  }, [results, query, period, range]);
+  }, [results, query, period, range, track]);
 
   // Export what's on screen: the current search, filters and sort order.
   useLayoutEffect(() => {
@@ -516,6 +525,7 @@ export default function SearchScreen({ navigation, route }: Props) {
                   style={[styles.bold, { color: t.text }]}
                 >
                   {e.merchant}
+                  {receiptIds.has(e.id) ? ' 📎' : ''}
                 </Text>
                 <Text
                   numberOfLines={1}

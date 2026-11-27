@@ -29,9 +29,13 @@ import { getReceipt, removeReceipt, setReceipt } from '../lib/receipts';
 import { addRecurring } from '../lib/recurring';
 import {
   deleteExpense,
+  deleteExpensesByIds,
+  type Expense,
   getExpense,
   insertExpense,
   isRecentDuplicate,
+  lastAmountAt,
+  listSplitParts,
   markAutoLogWorking,
   type PaymentMethod,
   updateExpense,
@@ -50,6 +54,7 @@ import {
 } from '../lib/parse';
 import { monthKey } from '../lib/months';
 import { categoryStyle, glow, useTheme } from '../lib/theme';
+import { useTrackFeature } from '../lib/usage';
 
 /**
  * Three ways in:
@@ -63,6 +68,7 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Add'>;
 
 export default function AddScreen({ navigation, route }: Props) {
   const t = useTheme();
+  const track = useTrackFeature();
   const params = route.params ?? {};
   const editId = params.id ? Number(params.id) : null;
   const leave = () => {
@@ -99,6 +105,23 @@ export default function AddScreen({ navigation, route }: Props) {
     [],
   );
   const [repeat, setRepeat] = useState(false);
+  // What was paid at this merchant last time, offered as a one-tap amount.
+  const [lastAmount, setLastAmount] = useState<{
+    amount: number;
+    currency: string;
+  } | null>(null);
+  useEffect(() => {
+    if (editId || params.auto === '1') return;
+    const timer = setTimeout(() => {
+      lastAmountAt(merchant)
+        .then(setLastAmount)
+        .catch(() => setLastAmount(null));
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [merchant, editId, params.auto]);
+  // When editing one part of a split payment: the other parts.
+  const [splitId, setSplitId] = useState<string | null>(null);
+  const [siblings, setSiblings] = useState<Expense[]>([]);
   const [method, setMethod] = useState<PaymentMethod>(
     params.method === 'cash' ? 'cash' : 'card',
   );
@@ -136,6 +159,12 @@ export default function AddScreen({ navigation, route }: Props) {
       setNote(e.note ?? '');
       setMethod(e.method === 'cash' ? 'cash' : 'card');
       setDate(new Date(e.created_at));
+      if (e.split_id) {
+        setSplitId(e.split_id);
+        listSplitParts(e.split_id)
+          .then(parts => setSiblings(parts.filter(p => p.id !== editId)))
+          .catch(() => {});
+      }
     });
     getReceipt(editId)
       .then(setReceiptData)
@@ -373,11 +402,16 @@ export default function AddScreen({ navigation, route }: Props) {
             | 'apple_pay'
             | 'manual',
         };
-        id = await insertExpense({ ...fields, ...shared });
+        // The parts of a split share an id, so editing one shows the others.
+        const split = parts.length
+          ? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+          : null;
+        id = await insertExpense({ ...fields, ...shared, split_id: split });
         for (const p of parts) {
           await insertExpense({
             ...fields,
             ...shared,
+            split_id: split,
             amount: p.amount,
             category: p.category,
             note: [fields.note, `Split of ${formatMoney(value)}`]
@@ -402,11 +436,38 @@ export default function AddScreen({ navigation, route }: Props) {
         else await removeReceipt(id);
       }
       checkBudgetAlerts();
+      if (parts.length) track('split');
+      if (receiptChanged && receipt) track('receipts');
+      if (/#\w/.test(note)) track('tags');
       leave();
     } catch (err) {
       setStatus(`Couldn't save: ${String(err)}`);
       setSaving(false);
     }
+  };
+
+  const removeWholeSplit = () => {
+    if (!editId || !splitId) return;
+    const ids = [editId, ...siblings.map(p => p.id)];
+    Alert.alert(
+      `Delete all ${ids.length} parts?`,
+      'The whole split payment goes to Recently deleted for 30 days.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete all',
+          style: 'destructive',
+          onPress: async () => {
+            await deleteExpensesByIds(ids);
+            showUndo({
+              message: `Split payment deleted (${ids.length} parts)`,
+              ids,
+            });
+            leave();
+          },
+        },
+      ],
+    );
   };
 
   const remove = () => {
@@ -464,6 +525,18 @@ export default function AddScreen({ navigation, route }: Props) {
           placeholderTextColor={t.muted}
           autoFocus={!editId}
         />
+        {!editId && !amount && lastAmount && (
+          <Pressable
+            onPress={() => setAmount(String(lastAmount.amount))}
+            accessibilityRole="button"
+            style={[styles.chip, styles.attach, { borderColor: t.accent }]}
+          >
+            <Text style={[styles.bold, { color: t.accent }]}>
+              ↺ Same as last time ·{' '}
+              {formatMoney(lastAmount.amount, lastAmount.currency)}
+            </Text>
+          </Pressable>
+        )}
 
         <Text style={[styles.label, { color: t.muted }]}>Paid with</Text>
         <View style={[styles.segment, { backgroundColor: t.cardHi }]}>
@@ -814,6 +887,47 @@ export default function AddScreen({ navigation, route }: Props) {
           </Text>
         </Pressable>
 
+        {siblings.length > 0 && (
+          <View
+            style={[
+              styles.splitBox,
+              { borderColor: t.border, backgroundColor: t.card },
+            ]}
+          >
+            <Text style={[styles.label, { color: t.muted }]}>
+              Part of a split payment
+            </Text>
+            {siblings.map(p => {
+              const cs = categoryStyle(p.category, t);
+              return (
+                <Pressable
+                  key={p.id}
+                  onPress={() => navigation.push('Add', { id: String(p.id) })}
+                  style={styles.newRow}
+                >
+                  <View
+                    style={[styles.splitDot, { backgroundColor: cs.color }]}
+                  />
+                  <Text style={[styles.flex, { color: t.text }]}>
+                    {p.category}
+                  </Text>
+                  <Text style={[styles.bold, { color: t.text }]}>
+                    {formatMoney(p.amount, p.currency)} ›
+                  </Text>
+                </Pressable>
+              );
+            })}
+            <Text style={[styles.hint, { color: t.muted }]}>
+              Each part is its own expense; change them one by one.
+            </Text>
+            <Pressable onPress={removeWholeSplit} hitSlop={8}>
+              <Text style={[styles.bold, { color: t.danger }]}>
+                Delete the whole split
+              </Text>
+            </Pressable>
+          </View>
+        )}
+
         {editId != null && (
           <Pressable
             onPress={remove}
@@ -936,6 +1050,13 @@ const styles = StyleSheet.create({
   receiptThumb: { width: 84, height: 84, borderRadius: 12, borderWidth: 1 },
   receiptActions: { gap: 12 },
   splitAmount: { width: 110 },
+  splitBox: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 14,
+    padding: 14,
+    gap: 10,
+  },
+  splitDot: { width: 10, height: 10, borderRadius: 5 },
   repeatRow: {
     flexDirection: 'row',
     alignItems: 'center',

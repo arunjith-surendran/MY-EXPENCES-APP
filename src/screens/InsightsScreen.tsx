@@ -16,6 +16,7 @@ import { compareCategories, topMerchants } from '../lib/insights';
 import { monthKey, monthLabel, monthRange, shiftMonth } from '../lib/months';
 import { formatMoney } from '../lib/parse';
 import { cardShadow, categoryStyle, useTheme } from '../lib/theme';
+import { useFeatureUse } from '../lib/usage';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Insights'>;
 
@@ -35,6 +36,7 @@ const pct = (r: number) => `${Math.round(Math.abs(r) * 100)}%`;
 /** What changed this month: categories against last month, top merchants, busiest weekdays. */
 export default function InsightsScreen({ navigation, route }: Props) {
   const t = useTheme();
+  useFeatureUse('insights');
   const [month, setMonth] = useState(route.params?.month ?? monthKey());
   const [now, setNow] = useState<Expense[] | null>(null);
   const [before, setBefore] = useState<Expense[]>([]);

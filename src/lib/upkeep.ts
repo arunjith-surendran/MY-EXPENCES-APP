@@ -1,7 +1,9 @@
 import { checkBudgetAlerts } from './budgets';
 import { convertForeignExpenses } from './currency';
+import { emitDataChanged } from './dataEvents';
 import { purgeDeletedExpenses } from './db';
 import { addDueRecurring } from './recurring';
+import { sendWeeklySummary } from './weekly';
 
 /** Deleted expenses stay restorable this long. */
 export const BIN_DAYS = 30;
@@ -25,6 +27,8 @@ export function runUpkeep(): Promise<number> {
         olderThan: Date.now() - BIN_DAYS * 86_400_000,
       }).catch(() => 0);
       await checkBudgetAlerts();
+      await sendWeeklySummary();
+      if (added > 0) emitDataChanged();
       return added;
     })().finally(() => {
       running = null;

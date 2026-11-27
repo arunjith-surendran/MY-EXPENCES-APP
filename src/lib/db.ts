@@ -19,6 +19,8 @@ export type Expense = {
   created_at: number; // unix ms
   /** What a non-AED expense was worth in AED (filled in from exchange rates); null for AED. */
   aed_amount?: number | null;
+  /** Shared by the parts of one payment split across categories. */
+  split_id?: string | null;
 };
 
 /** The expense in AED for totals, or null if it's in another currency and has no rate yet. */
@@ -35,7 +37,7 @@ const AED_SQL =
 
 /** Columns copied between `expenses` and the `deleted_expenses` bin. */
 const EXPENSE_COLUMNS =
-  'id, amount, currency, merchant, card, category, source, note, created_at, method, aed_amount';
+  'id, amount, currency, merchant, card, category, source, note, created_at, method, aed_amount, split_id';
 
 export type NewExpense = Omit<Expense, 'id' | 'created_at' | 'method'> & {
   created_at?: number;
@@ -55,7 +57,7 @@ export type MonthSummary = {
   count: number;
 };
 
-const DATABASE_VERSION = 6;
+const DATABASE_VERSION = 7;
 
 let db: DB | null = null;
 
@@ -182,13 +184,44 @@ export async function migrateDbIfNeeded() {
       created_at INTEGER NOT NULL
     )`);
   }
+  if (current < 7) {
+    await addColumnIfMissing(d, 'expenses', 'split_id', 'TEXT');
+    await addColumnIfMissing(d, 'deleted_expenses', 'split_id', 'TEXT');
+    // Savings goals ("Trip to Georgia, AED 5,000 by March") and money put towards them.
+    await d.execute(`CREATE TABLE IF NOT EXISTS goals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      target REAL NOT NULL,
+      deadline INTEGER,
+      emoji TEXT,
+      created_at INTEGER NOT NULL,
+      done_at INTEGER
+    )`);
+    await d.execute(`CREATE TABLE IF NOT EXISTS goal_entries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      goal_id INTEGER NOT NULL,
+      amount REAL NOT NULL,
+      created_at INTEGER NOT NULL
+    )`);
+    // Money lent and borrowed: who, how much, which way, and when it was settled.
+    await d.execute(`CREATE TABLE IF NOT EXISTS debts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      person TEXT NOT NULL,
+      amount REAL NOT NULL,
+      direction TEXT NOT NULL,
+      note TEXT,
+      created_at INTEGER NOT NULL,
+      due_at INTEGER,
+      settled_at INTEGER
+    )`);
+  }
   await d.execute(`PRAGMA user_version = ${DATABASE_VERSION}`);
 }
 
 export async function insertExpense(e: NewExpense): Promise<number> {
   const result = await getDb().execute(
-    `INSERT INTO expenses (amount, currency, merchant, card, category, source, method, note, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO expenses (amount, currency, merchant, card, category, source, method, note, created_at, split_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       e.amount,
       e.currency,
@@ -199,6 +232,7 @@ export async function insertExpense(e: NewExpense): Promise<number> {
       e.method ?? 'card',
       e.note,
       e.created_at ?? Date.now(),
+      e.split_id ?? null,
     ],
   );
   return result.insertId ?? 0;
@@ -625,6 +659,15 @@ export async function listMonthCategoryTotals(): Promise<MonthCategoryTotal[]> {
   }));
 }
 
+/** The other parts of a split payment, oldest first. */
+export async function listSplitParts(splitId: string): Promise<Expense[]> {
+  const { rows } = await getDb().execute(
+    'SELECT * FROM expenses WHERE split_id = ? ORDER BY id',
+    [splitId],
+  );
+  return rows as unknown as Expense[];
+}
+
 /** Moves one expense to the bin (see deleteExpensesByIds). */
 export async function deleteExpense(id: number) {
   await deleteExpensesByIds([id]);
@@ -707,6 +750,21 @@ export async function searchExpenses(q: ExpenseSearch): Promise<Expense[]> {
     args,
   );
   return rows as unknown as Expense[];
+}
+
+/** What was paid at this merchant last time (for "same as last time"), or null. */
+export async function lastAmountAt(
+  merchant: string,
+): Promise<{ amount: number; currency: string } | null> {
+  const name = merchant.trim();
+  if (name.length < 2) return null;
+  const { rows } = await getDb().execute(
+    'SELECT amount, currency FROM expenses WHERE merchant = ? COLLATE NOCASE ORDER BY created_at DESC LIMIT 1',
+    [name],
+  );
+  return rows[0]
+    ? { amount: Number(rows[0].amount), currency: String(rows[0].currency) }
+    : null;
 }
 
 /** Every #tag used in notes, most used first. */
@@ -851,6 +909,39 @@ export async function firstExpenseAt(): Promise<number | null> {
     'SELECT MIN(created_at) AS first FROM expenses',
   );
   return rows[0]?.first != null ? Number(rows[0].first) : null;
+}
+
+/** Every table holding the user's data; wipeAllData empties them all. */
+const USER_TABLES = [
+  'expenses',
+  'deleted_expenses',
+  'receipts',
+  'salary',
+  'categories',
+  'merchant_categories',
+  'budgets',
+  'recurring',
+  'goals',
+  'goal_entries',
+  'debts',
+  'meta',
+];
+
+/**
+ * Removes everything this app stores on the phone (account deletion, or clearing another
+ * account's data). Scheduled reminders are cancelled by the caller (see dataOwner.ts).
+ */
+export async function wipeAllData() {
+  // Only tables that exist (an older database may not have every one yet).
+  const { rows } = await getDb().execute(
+    "SELECT name FROM sqlite_master WHERE type = 'table'",
+  );
+  const existing = new Set(rows.map(r => String(r.name)));
+  await getDb().transaction(async tx => {
+    for (const table of USER_TABLES) {
+      if (existing.has(table)) await tx.execute(`DELETE FROM ${table}`);
+    }
+  });
 }
 
 /** Deletes everything, or only the given [start, end) range. Returns rows removed. */

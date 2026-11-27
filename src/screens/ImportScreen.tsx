@@ -4,10 +4,13 @@ import {
   ActionSheetIOS,
   ActivityIndicator,
   Alert,
+  Modal,
   NativeModules,
   Platform,
   Pressable,
+  ScrollView,
   SectionList,
+  Share,
   StyleSheet,
   Text,
   View,
@@ -31,13 +34,17 @@ import {
 import { formatMoney, guessCategory } from '../lib/parse';
 import { isSalary, parseStatement, type StatementTxn } from '../lib/statement';
 import { categoryStyle, glow, useTheme } from '../lib/theme';
+import { useTrackFeature } from '../lib/usage';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Import'>;
 
 type Picked = { name: string; path: string } | null;
 const Importer = NativeModules.StatementImporter as {
   pick(): Promise<Picked>;
+  /** Rebuilds table rows from character positions (see StatementImporter.m). */
   extractText(path: string, password: string | null): Promise<string>;
+  /** PDFKit's own text order; missing on builds before the layout reader. */
+  extractRawText?(path: string, password: string | null): Promise<string>;
 };
 
 type Row = StatementTxn & { key: string; duplicate: boolean };
@@ -58,6 +65,7 @@ function askPassword(message: string): Promise<string | null> {
 
 export default function ImportScreen({ navigation, route }: Props) {
   const t = useTheme();
+  const track = useTrackFeature();
   // Opened from a month: only that month's transactions are offered by default.
   const month = route.params?.month ?? null;
   const inMonth = (r: { date: number }) =>
@@ -68,6 +76,8 @@ export default function ImportScreen({ navigation, route }: Props) {
   const [rows, setRows] = useState<Row[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [useSalary, setUseSalary] = useState(true);
+  // The text read from a statement that couldn't be parsed, shown to help diagnose it.
+  const [readText, setReadText] = useState<string | null>(null);
   // Merchants the user has categorised before keep that category.
   const [resolveCategory, setResolveCategory] = useState<CategoryResolver>(
     () => (_merchant: string, description?: string) =>
@@ -125,12 +135,28 @@ export default function ImportScreen({ navigation, route }: Props) {
           setBusy('Reading statement…');
         }
       }
-      const txns = parseStatement(text);
+      let txns = parseStatement(text);
+      // Some PDFs read better in PDFKit's own order; try that before giving up.
+      if (txns.length === 0 && Importer.extractRawText) {
+        const raw = await Importer.extractRawText(picked.path, password).catch(
+          () => null,
+        );
+        if (raw) {
+          txns = parseStatement(raw);
+          if (txns.length === 0)
+            text = `${text}\n\n----- PDF order -----\n\n${raw}`;
+        }
+      }
       if (txns.length === 0) {
         setBusy(null);
+        const readText = text;
         Alert.alert(
           'No transactions found',
-          "This statement's layout isn't recognised yet. Try the CSV/Excel export from your bank, or share a sample so the reader can be taught this format.",
+          "This statement's layout isn't recognised yet. Try the CSV/Excel export from your bank. You can also see exactly what the app read from the file — a screenshot of it (with amounts hidden if you like) helps teach the reader this format.",
+          [
+            { text: 'See what was read', onPress: () => setReadText(readText) },
+            { text: 'OK', style: 'cancel' },
+          ],
         );
         return;
       }
@@ -233,6 +259,7 @@ export default function ImportScreen({ navigation, route }: Props) {
   const doImport = async () => {
     setBusy('Importing…');
     try {
+      track('statement_import');
       const added = await insertExpenses(
         chosen.map(r => ({
           amount: r.amount,
@@ -327,6 +354,47 @@ export default function ImportScreen({ navigation, route }: Props) {
             Choose statement file
           </Text>
         </Pressable>
+
+        <Modal
+          visible={readText != null}
+          animationType="slide"
+          presentationStyle="pageSheet"
+          onRequestClose={() => setReadText(null)}
+        >
+          <View style={[styles.flex, { backgroundColor: t.bg }]}>
+            <View style={[styles.sheetHead, { borderBottomColor: t.border }]}>
+              <Text style={[styles.sheetTitle, { color: t.text }]}>
+                What the app read
+              </Text>
+              <Pressable onPress={() => setReadText(null)} hitSlop={10}>
+                <Text style={[styles.bold, { color: t.accent }]}>Close</Text>
+              </Pressable>
+            </View>
+            <Text style={[styles.sheetNote, { color: t.muted }]}>
+              Only on your phone. Each line should be one transaction with its
+              date and amount. If dates, names and amounts are on separate
+              lines, or there are no amounts at all, that's why nothing was
+              found.
+            </Text>
+            <ScrollView contentContainerStyle={styles.sheetBody}>
+              <Text selectable style={[styles.mono, { color: t.text }]}>
+                {(readText ?? '').slice(0, 15000) || '(The file had no text.)'}
+              </Text>
+            </ScrollView>
+            <View style={[styles.sheetFoot, { borderTopColor: t.border }]}>
+              <Pressable
+                onPress={() =>
+                  Share.share({ message: (readText ?? '').slice(0, 15000) })
+                }
+                style={[styles.button, { backgroundColor: t.accent }]}
+              >
+                <Text style={[styles.buttonText, { color: t.onAccent }]}>
+                  Share this text…
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+        </Modal>
       </View>
     );
   }
@@ -610,6 +678,18 @@ const styles = StyleSheet.create({
   },
   checkMark: { fontSize: 14, fontWeight: '900', marginTop: -1 },
   bold: { fontWeight: '700' },
+  sheetHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 16,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  sheetTitle: { fontSize: 17, fontWeight: '800' },
+  sheetNote: { fontSize: 13, lineHeight: 18, padding: 16, paddingBottom: 4 },
+  sheetBody: { padding: 16 },
+  mono: { fontFamily: 'Menlo', fontSize: 11, lineHeight: 15 },
+  sheetFoot: { padding: 16, borderTopWidth: StyleSheet.hairlineWidth },
   categoryLink: { fontWeight: '700' },
   meta: { fontSize: 12, marginTop: 3, lineHeight: 17 },
   amount: { fontWeight: '800', fontSize: 15 },

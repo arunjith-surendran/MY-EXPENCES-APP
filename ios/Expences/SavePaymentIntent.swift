@@ -35,6 +35,7 @@ struct SavePaymentIntent: AppIntent {
       RunLog.record(status: status, amount: amount, merchant: merchant, card: card, message: nil)
       if let savedCategory {
         await PaymentNotice.post(amount: amount, merchant: merchant, category: savedCategory)
+        await BudgetNotice.check(category: savedCategory)
       }
     } catch {
       let message = (error as? PaymentError)?.text ?? String(describing: error)
@@ -297,7 +298,12 @@ struct ExpencesShortcuts: AppShortcutsProvider {
   static var appShortcuts: [AppShortcut] {
     AppShortcut(
       intent: SavePaymentIntent(),
-      phrases: ["Save a payment in \(.applicationName)"],
+      phrases: [
+        "Save a payment in \(.applicationName)",
+        "Add an expense in \(.applicationName)",
+        "Log a payment in \(.applicationName)",
+        "Add to \(.applicationName)",
+      ],
       shortTitle: "Save Payment",
       systemImageName: "creditcard"
     )
@@ -361,11 +367,107 @@ enum PaymentNotice {
     let start = cal.date(from: cal.dateComponents([.year, .month], from: Date())) ?? Date()
     var total = 0.0
     var sum: OpaquePointer?
-    if sqlite3_prepare_v2(db, "SELECT COALESCE(SUM(amount), 0) FROM expenses WHERE currency = 'AED' AND created_at >= ?", -1, &sum, nil) == SQLITE_OK {
+    // Foreign-currency payments count with their AED value (aed_amount, filled in by the app);
+    // a database from before that column existed falls back to AED only.
+    let converted =
+      "SELECT COALESCE(SUM(CASE WHEN currency = 'AED' THEN amount ELSE COALESCE(aed_amount, 0) END), 0) FROM expenses WHERE created_at >= ?"
+    let aedOnly = "SELECT COALESCE(SUM(amount), 0) FROM expenses WHERE currency = 'AED' AND created_at >= ?"
+    if sqlite3_prepare_v2(db, converted, -1, &sum, nil) == SQLITE_OK
+      || sqlite3_prepare_v2(db, aedOnly, -1, &sum, nil) == SQLITE_OK
+    {
       sqlite3_bind_int64(sum, 1, Int64(start.timeIntervalSince1970 * 1000))
       if sqlite3_step(sum) == SQLITE_ROW { total = sqlite3_column_double(sum, 0) }
     }
     sqlite3_finalize(sum)
     return (enabled, total)
+  }
+}
+
+/// Budget alerts right after an Apple Pay tap: the first time this month the category's
+/// budget passes 80% and 100%. Same rules and meta keys as src/lib/budgets.ts, so the app
+/// doesn't send the same alert again when it opens.
+@available(iOS 18.0, *)
+enum BudgetNotice {
+  private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
+  static func check(category: String) async {
+    let dir = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
+    var db: OpaquePointer?
+    guard sqlite3_open_v2(dir.appendingPathComponent("expenses.db").path, &db,
+                          SQLITE_OPEN_READWRITE, nil) == SQLITE_OK else {
+      sqlite3_close(db)
+      return
+    }
+    defer { sqlite3_close(db) }
+    sqlite3_busy_timeout(db, 3000)
+
+    // The budget for this category (no table yet, or no budget: nothing to do).
+    var stmt: OpaquePointer?
+    guard sqlite3_prepare_v2(db, "SELECT amount FROM budgets WHERE category = ?", -1, &stmt, nil) == SQLITE_OK
+    else { return }
+    sqlite3_bind_text(stmt, 1, category, -1, transient)
+    let budget = sqlite3_step(stmt) == SQLITE_ROW ? sqlite3_column_double(stmt, 0) : 0
+    sqlite3_finalize(stmt)
+    guard budget > 0 else { return }
+
+    let cal = Calendar.current
+    let now = Date()
+    let start = cal.date(from: cal.dateComponents([.year, .month], from: now)) ?? now
+    let end = cal.date(byAdding: .month, value: 1, to: start) ?? now
+    var spent = 0.0
+    let sql = """
+      SELECT COALESCE(SUM(CASE WHEN currency = 'AED' THEN amount ELSE COALESCE(aed_amount, 0) END), 0)
+      FROM expenses WHERE category = ? AND created_at >= ? AND created_at < ?
+      """
+    if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+      sqlite3_bind_text(stmt, 1, category, -1, transient)
+      sqlite3_bind_int64(stmt, 2, Int64(start.timeIntervalSince1970 * 1000))
+      sqlite3_bind_int64(stmt, 3, Int64(end.timeIntervalSince1970 * 1000))
+      if sqlite3_step(stmt) == SQLITE_ROW { spent = sqlite3_column_double(stmt, 0) }
+    }
+    sqlite3_finalize(stmt)
+
+    let reached: Double = spent >= budget ? 1 : (spent >= budget * 0.8 ? 0.8 : 0)
+    guard reached > 0 else { return }
+
+    let month = String(format: "%04d-%02d", cal.component(.year, from: now), cal.component(.month, from: now))
+    let key = "budget_alert:\(month):\(category)"
+    var sent = 0.0
+    if sqlite3_prepare_v2(db, "SELECT value FROM meta WHERE key = ?", -1, &stmt, nil) == SQLITE_OK {
+      sqlite3_bind_text(stmt, 1, key, -1, transient)
+      if sqlite3_step(stmt) == SQLITE_ROW, let v = sqlite3_column_text(stmt, 0) {
+        sent = Double(String(cString: v)) ?? 0
+      }
+    }
+    sqlite3_finalize(stmt)
+    guard reached > sent else { return }
+
+    if sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", -1, &stmt, nil) == SQLITE_OK {
+      sqlite3_bind_text(stmt, 1, key, -1, transient)
+      sqlite3_bind_text(stmt, 2, reached >= 1 ? "1" : "0.8", -1, transient)
+      sqlite3_step(stmt)
+    }
+    sqlite3_finalize(stmt)
+
+    let center = UNUserNotificationCenter.current()
+    guard await center.notificationSettings().authorizationStatus == .authorized else { return }
+    let content = UNMutableNotificationContent()
+    content.title = reached >= 1 ? "\(category) budget used up" : "\(category): 80% of budget spent"
+    let over = spent - budget
+    content.body = reached >= 1
+      ? "\(money(spent)) of \(money(budget)) this month\(over > 0 ? " (\(money(over)) over)" : "")."
+      : "\(money(spent)) of \(money(budget)) so far this month."
+    content.sound = .default
+    content.threadIdentifier = "budgets"
+    try? await center.add(UNNotificationRequest(identifier: key, content: content, trigger: nil))
+  }
+
+  private static func money(_ n: Double) -> String {
+    let f = NumberFormatter()
+    f.numberStyle = .decimal
+    f.minimumFractionDigits = 2
+    f.maximumFractionDigits = 2
+    f.locale = Locale(identifier: "en_AE")
+    return "AED \(f.string(from: NSNumber(value: n)) ?? String(format: "%.2f", n))"
   }
 }

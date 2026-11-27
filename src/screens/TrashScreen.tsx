@@ -19,12 +19,14 @@ import { formatMoney } from '../lib/parse';
 import { shortDay } from '../lib/periods';
 import { BIN_DAYS } from '../lib/upkeep';
 import { categoryStyle, useTheme } from '../lib/theme';
+import { useFeatureUse } from '../lib/usage';
 
 const DAY_MS = 86_400_000;
 
 /** Deleted expenses, kept for 30 days: restore them, or delete them for good. */
 export default function TrashScreen() {
   const t = useTheme();
+  useFeatureUse('trash');
   const [items, setItems] = useState<DeletedExpense[]>([]);
   const [picked, setPicked] = useState<Set<number>>(new Set());
 

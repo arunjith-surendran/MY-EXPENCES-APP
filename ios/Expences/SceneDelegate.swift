@@ -37,7 +37,29 @@ class SceneDelegate: RCTDefaultReactNativeFactoryDelegate, UIWindowSceneDelegate
 
     connectionOptions.urlContexts.forEach { runNativeTestSave($0.url) }
 
-   
+    // Launched from a Home Screen quick action: open it once the app has started.
+    if let item = connectionOptions.shortcutItem {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.open(item) }
+    }
+  }
+
+  /// Long-press the app icon → "Add expense", "Add cash expense", "Search expenses".
+  func windowScene(
+    _ windowScene: UIWindowScene,
+    performActionFor shortcutItem: UIApplicationShortcutItem,
+    completionHandler: @escaping (Bool) -> Void
+  ) {
+    completionHandler(open(shortcutItem))
+  }
+
+  /// Quick actions carry an expences:// link (Info.plist), handled like any other link.
+  @discardableResult
+  private func open(_ item: UIApplicationShortcutItem) -> Bool {
+    guard let link = item.userInfo?["url"] as? String, let url = URL(string: link) else {
+      return false
+    }
+    UIApplication.shared.open(url)
+    return true
   }
 
   func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {

@@ -20,6 +20,7 @@ import {
 } from '../lib/db';
 import { CATEGORIES } from '../lib/parse';
 import { categoryStyle, useTheme } from '../lib/theme';
+import { useFeatureUse } from '../lib/usage';
 
 const GROUPS: [CategoryGroup, string][] = [
   ['essentials', 'Essential'],
@@ -47,6 +48,7 @@ const BUILT_IN_GROUP: Record<string, string> = {
  */
 export default function CategoriesScreen() {
   const t = useTheme();
+  useFeatureUse('categories');
   const categories = useCategories();
   const [newName, setNewName] = useState('');
   const [newGroup, setNewGroup] = useState<CategoryGroup>('other');

@@ -24,6 +24,7 @@ const TABLES = {
     'created_at',
     'method',
     'aed_amount',
+    'split_id',
   ],
   salary: ['month', 'amount'],
   meta: ['key', 'value'],
@@ -44,6 +45,18 @@ const TABLES = {
     'created_at',
   ],
   receipts: ['expense_id', 'data', 'created_at'],
+  goals: ['id', 'name', 'target', 'deadline', 'emoji', 'created_at', 'done_at'],
+  goal_entries: ['id', 'goal_id', 'amount', 'created_at'],
+  debts: [
+    'id',
+    'person',
+    'amount',
+    'direction',
+    'note',
+    'created_at',
+    'due_at',
+    'settled_at',
+  ],
 } as const;
 
 type Table = keyof typeof TABLES;
@@ -59,6 +72,9 @@ const LOCAL_META = [
   'notify_read_at',
   'fx_rates',
   'privacy_intro_seen',
+  // Which account owns the data on this phone (dataOwner.ts).
+  'data_owner_id',
+  'data_owner_label',
 ];
 
 export type Backup = {
@@ -74,7 +90,21 @@ export type BackupSummary = {
   createdAt: string;
 };
 
+/** What the native side returns for an encrypted backup (see StatementImporter.m). */
+export type LockedBox = {
+  salt: string;
+  iv: string;
+  data: string;
+  mac: string;
+  iter: number;
+};
+
+/** A password-protected backup file: only `app` and `encrypted` are readable. */
+type LockedFile = { app: typeof APP; format: number; encrypted: LockedBox };
+
 type Importer = {
+  encrypt?: (text: string, password: string) => Promise<LockedBox>;
+  decrypt?: (box: LockedBox, password: string) => Promise<string>;
   writeFile?: (name: string, text: string) => Promise<string>;
   pickBackup?: () => Promise<{ name: string; path: string } | null>;
   extractText: (path: string, password: string | null) => Promise<string>;
@@ -104,19 +134,56 @@ export async function createBackup(includePhotos: boolean): Promise<Backup> {
   };
 }
 
-/** Writes the backup to a file and opens the share sheet to save it (e.g. to Files). */
-export async function shareBackup(includePhotos: boolean): Promise<number> {
+export const canEncrypt = () => !!native?.encrypt && !!native?.decrypt;
+
+/**
+ * Writes the backup to a file and opens the share sheet to save it (e.g. to Files).
+ * With a password, the file is encrypted (AES-256) and useless without it.
+ */
+export async function shareBackup(
+  includePhotos: boolean,
+  password?: string,
+): Promise<number> {
   if (!native?.writeFile) {
     throw new Error('Update the app to save backups.');
   }
   const backup = await createBackup(includePhotos);
   const day = backup.createdAt.slice(0, 10);
+  let contents = JSON.stringify(backup);
+  if (password) {
+    if (!native.encrypt) throw new Error('Update the app to encrypt backups.');
+    const locked: LockedFile = {
+      app: APP,
+      format: FORMAT,
+      encrypted: await native.encrypt(contents, password),
+    };
+    contents = JSON.stringify(locked);
+  }
   const path = await native.writeFile(
-    `expences-backup-${day}.json`,
-    JSON.stringify(backup),
+    `expences-backup-${day}${password ? '-locked' : ''}.json`,
+    contents,
   );
   await Share.share({ url: `file://${path}`, title: 'Expences backup' });
   return backup.tables.expenses?.length ?? 0;
+}
+
+/** The encrypted part of a password-protected backup file, or null if it isn't one. Pure. */
+export function lockedBox(text: string): LockedBox | null {
+  try {
+    const data = JSON.parse(text) as Partial<LockedFile>;
+    return data?.app === APP && data.encrypted?.data ? data.encrypted : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Decrypts a password-protected backup; throws "Wrong password." if it doesn't match. */
+export async function unlockBackup(
+  box: LockedBox,
+  password: string,
+): Promise<Backup> {
+  if (!native?.decrypt) throw new Error('Update the app to open this backup.');
+  return parseBackup(await native.decrypt(box, password));
 }
 
 /** Checks a file's contents is an Expences backup. Pure, for tests. */
@@ -150,13 +217,22 @@ export function summarize(b: Backup): BackupSummary {
   };
 }
 
-/** Lets the user pick a backup file; null if they cancel. */
-export async function pickBackup(): Promise<Backup | null> {
-  if (!native?.pickBackup)
+export type PickedBackup =
+  | { locked: false; backup: Backup }
+  | { locked: true; box: LockedBox };
+
+/** Lets the user pick a backup file; null if they cancel. Encrypted ones need unlockBackup. */
+export async function pickBackup(): Promise<PickedBackup | null> {
+  if (!native?.pickBackup) {
     throw new Error('Update the app to restore backups.');
+  }
   const picked = await native.pickBackup();
   if (!picked) return null;
-  return parseBackup(await native.extractText(picked.path, null));
+  const text = await native.extractText(picked.path, null);
+  const box = lockedBox(text);
+  return box
+    ? { locked: true, box }
+    : { locked: false, backup: parseBackup(text) };
 }
 
 /** Only known columns, with values of a type SQLite takes. */
@@ -208,6 +284,18 @@ export async function restoreBackup(
           .map(() => '?')
           .join(', ')})`,
         cols.map(c => r[c]),
+      );
+    };
+
+    /** Inserts a row with a new id. */
+    const insertNew = (table: Table, row: Row) => {
+      const rest = withoutId(clean(table, row));
+      const cols = Object.keys(rest);
+      return tx.execute(
+        `INSERT INTO ${table} (${cols.join(', ')}) VALUES (${cols
+          .map(() => '?')
+          .join(', ')})`,
+        cols.map(c => rest[c]),
       );
     };
 
@@ -292,6 +380,27 @@ export async function restoreBackup(
           .join(', ')})`,
         cols.map(c => rest[c]),
       );
+    }
+    // Goals by name (their entries follow them to the new id); debts unless already here.
+    const goalIds = new Map<number, number>();
+    for (const row of backup.tables.goals ?? []) {
+      const { rows } = await tx.execute('SELECT id FROM goals WHERE name = ?', [
+        String(row.name),
+      ]);
+      if (rows[0]) continue;
+      const result = await insertNew('goals', row);
+      goalIds.set(Number(row.id), result.insertId ?? 0);
+    }
+    for (const row of backup.tables.goal_entries ?? []) {
+      const goalId = goalIds.get(Number(row.goal_id));
+      if (goalId) await insertNew('goal_entries', { ...row, goal_id: goalId });
+    }
+    for (const row of backup.tables.debts ?? []) {
+      const { rows } = await tx.execute(
+        'SELECT id FROM debts WHERE person = ? AND ABS(amount - ?) < 0.005 AND created_at = ?',
+        [String(row.person), Number(row.amount), Number(row.created_at)],
+      );
+      if (!rows[0]) await insertNew('debts', row);
     }
   });
   return added;

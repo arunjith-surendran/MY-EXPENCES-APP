@@ -30,6 +30,8 @@ import ProLock from '../components/ProLock';
 import DailyChart from '../components/DailyChart';
 import Gradient from '../components/Gradient';
 import { useUndo } from '../components/UndoToast';
+import { useDataChanged } from '../lib/dataEvents';
+import { listReceiptIds } from '../lib/receipts';
 import {
   aedOf,
   deleteExpensesByIds,
@@ -51,6 +53,7 @@ import {
   textGlow,
   useTheme,
 } from '../lib/theme';
+import { useTrackFeature } from '../lib/usage';
 
 /** Opened for any month from the stack, or as the "Month" tab for the current month. */
 type Props =
@@ -62,6 +65,7 @@ type DaySection = { title: string; total: number; data: Expense[] };
 /** Everything for one month: totals, daily chart, highlights, categories, expenses by day. */
 export default function MonthScreen({ route }: Props) {
   const t = useTheme();
+  const track = useTrackFeature();
   // Same object either way; typed as the stack so it can open Add, Import and Salary.
   const navigation =
     useNavigation<NativeStackNavigationProp<RootStackParamList>>();
@@ -71,6 +75,7 @@ export default function MonthScreen({ route }: Props) {
   const month = route.name === 'Month' ? route.params.month : monthKey();
   const isCurrentMonth = month === monthKey();
   const [items, setItems] = useState<Expense[]>([]);
+  const [receiptIds, setReceiptIds] = useState<Set<number>>(new Set());
   // Select mode (hold an expense, or "Select expenses" in the menu): ids ticked for deleting.
   const [selected, setSelected] = useState<Set<number> | null>(null);
   const [salary, setSalary] = useState<number | null>(null);
@@ -83,10 +88,14 @@ export default function MonthScreen({ route }: Props) {
     getSalaryInfo()
       .then(info => setSalary(salaryFor(info, month)))
       .catch(() => {});
+    listReceiptIds()
+      .then(setReceiptIds)
+      .catch(() => {});
   }, [month]);
 
   // Reload whenever the screen regains focus (e.g. after editing an expense).
   useFocusEffect(load);
+  useDataChanged(load);
 
   // Payments saved by the Wallet automation happen in the background; refresh on return.
   useEffect(() => {
@@ -95,6 +104,12 @@ export default function MonthScreen({ route }: Props) {
     });
     return () => sub.remove();
   }, [load]);
+
+  // Foreign-currency payments still waiting for an exchange rate.
+  const unconverted = useMemo(
+    () => items.filter(e => aedOf(e) == null),
+    [items],
+  );
 
   const { monthTotal, todayTotal, cashTotal, byCategory } = useMemo(() => {
     const today = startOfToday();
@@ -200,7 +215,9 @@ export default function MonthScreen({ route }: Props) {
             setSelected(null);
             load();
             showUndo({
-              message: `${ids.length} expense${ids.length === 1 ? '' : 's'} deleted`,
+              message: `${ids.length} expense${
+                ids.length === 1 ? '' : 's'
+              } deleted`,
               ids,
               onUndone: load,
             });
@@ -215,8 +232,9 @@ export default function MonthScreen({ route }: Props) {
       Alert.alert('Nothing to export', `No expenses in ${monthLabel(month)}.`);
       return;
     }
+    track('export');
     await Share.share({ title: `Expenses ${month}`, message: toCsv(items) });
-  }, [items, month]);
+  }, [items, month, track]);
 
   const openMenu = useCallback(() => {
     const actions: [string, () => void][] = [
@@ -360,6 +378,14 @@ export default function MonthScreen({ route }: Props) {
               {convert(monthTotal) && (
                 <Text style={[styles.converted, { color: t.muted }]}>
                   {convert(monthTotal)}
+                </Text>
+              )}
+              {unconverted.length > 0 && (
+                <Text style={[styles.converted, { color: t.warning }]}>
+                  {unconverted.length} payment
+                  {unconverted.length === 1 ? '' : 's'} in{' '}
+                  {[...new Set(unconverted.map(e => e.currency))].join(', ')}{' '}
+                  not counted yet: needs an exchange rate (go online).
                 </Text>
               )}
               <View style={styles.chipRow}>
@@ -592,6 +618,7 @@ export default function MonthScreen({ route }: Props) {
                   numberOfLines={1}
                 >
                   {e.merchant}
+                  {receiptIds.has(e.id) ? ' 📎' : ''}
                 </Text>
                 <Text
                   style={[styles.meta, { color: t.muted }]}
@@ -653,7 +680,6 @@ export default function MonthScreen({ route }: Props) {
           </Pressable>
         </View>
       )}
-
     </View>
   );
 }
@@ -721,7 +747,6 @@ function Tile({
     </View>
   );
 }
-
 
 const styles = StyleSheet.create({
   flex: { flex: 1 },

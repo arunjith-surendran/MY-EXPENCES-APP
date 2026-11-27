@@ -8,19 +8,26 @@ import {
   StyleSheet,
   Switch,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 
 import {
+  type Backup,
+  canEncrypt,
   canSaveFiles,
+  type LockedBox,
   pickBackup,
   restoreBackup,
   shareBackup,
   summarize,
+  unlockBackup,
 } from '../lib/backup';
+import { emitDataChanged } from '../lib/dataEvents';
 import { getMeta, setMeta } from '../lib/db';
 import { runUpkeep } from '../lib/upkeep';
 import { useTheme } from '../lib/theme';
+import { useTrackFeature } from '../lib/usage';
 
 const LAST_BACKUP_KEY = 'last_backup_at';
 
@@ -39,9 +46,17 @@ const when = (iso: string) =>
  */
 export default function BackupScreen() {
   const t = useTheme();
+  const track = useTrackFeature();
   const [photos, setPhotos] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [last, setLast] = useState<string | null>(null);
+  // Optional password for the backup file.
+  const [lock, setLock] = useState(false);
+  const [password, setPassword] = useState('');
+  const [confirm, setConfirm] = useState('');
+  // A password-protected backup waiting for its password.
+  const [locked, setLocked] = useState<LockedBox | null>(null);
+  const [unlockWith, setUnlockWith] = useState('');
 
   useFocusEffect(
     useCallback(() => {
@@ -52,9 +67,20 @@ export default function BackupScreen() {
   );
 
   const backup = async () => {
-    setBusy('Preparing backup…');
+    if (lock) {
+      if (password.length < 6) {
+        Alert.alert('Use a password of at least 6 characters');
+        return;
+      }
+      if (password !== confirm) {
+        Alert.alert("The passwords don't match");
+        return;
+      }
+    }
+    setBusy(lock ? 'Encrypting backup…' : 'Preparing backup…');
     try {
-      const n = await shareBackup(photos);
+      const n = await shareBackup(photos, lock ? password : undefined);
+      track('backup');
       const now = new Date().toISOString();
       await setMeta(LAST_BACKUP_KEY, now);
       setLast(now);
@@ -71,28 +97,14 @@ export default function BackupScreen() {
 
   const restore = async () => {
     try {
-      const file = await pickBackup();
-      if (!file) return;
-      const s = summarize(file);
-      Alert.alert(
-        'Restore this backup?',
-        `${s.expenses} expense${s.expenses === 1 ? '' : 's'}${
-          s.receipts
-            ? ` and ${s.receipts} receipt photo${s.receipts === 1 ? '' : 's'}`
-            : ''
-        }, saved ${when(
-          s.createdAt,
-        )}.\n\nAdd keeps what's on this phone and adds what's missing. Replace makes this phone exactly like the backup.`,
-        [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Replace everything',
-            style: 'destructive',
-            onPress: () => run(file, 'replace'),
-          },
-          { text: 'Add missing', onPress: () => run(file, 'merge') },
-        ],
-      );
+      const picked = await pickBackup();
+      if (!picked) return;
+      if (picked.locked) {
+        setUnlockWith('');
+        setLocked(picked.box);
+        return;
+      }
+      confirmRestore(picked.backup);
     } catch (err) {
       Alert.alert(
         "Couldn't open the backup",
@@ -101,14 +113,53 @@ export default function BackupScreen() {
     }
   };
 
-  const run = async (
-    file: NonNullable<Awaited<ReturnType<typeof pickBackup>>>,
-    mode: 'replace' | 'merge',
-  ) => {
+  const unlock = async () => {
+    if (!locked) return;
+    setBusy('Unlocking…');
+    try {
+      const file = await unlockBackup(locked, unlockWith);
+      setLocked(null);
+      setBusy(null);
+      confirmRestore(file);
+    } catch (err) {
+      setBusy(null);
+      Alert.alert(
+        "Couldn't open the backup",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  };
+
+  const confirmRestore = (file: Backup) => {
+    const s = summarize(file);
+    Alert.alert(
+      'Restore this backup?',
+      `${s.expenses} expense${s.expenses === 1 ? '' : 's'}${
+        s.receipts
+          ? ` and ${s.receipts} receipt photo${s.receipts === 1 ? '' : 's'}`
+          : ''
+      }, saved ${when(
+        s.createdAt,
+      )}.\n\nAdd keeps what's on this phone and adds what's missing. Replace makes this phone exactly like the backup.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Replace everything',
+          style: 'destructive',
+          onPress: () => run(file, 'replace'),
+        },
+        { text: 'Add missing', onPress: () => run(file, 'merge') },
+      ],
+    );
+  };
+
+  const run = async (file: Backup, mode: 'replace' | 'merge') => {
     setBusy('Restoring…');
     try {
       const added = await restoreBackup(file, mode);
+      track('restore');
       await runUpkeep();
+      emitDataChanged();
       Alert.alert(
         'Restored',
         mode === 'replace'
@@ -168,6 +219,48 @@ export default function BackupScreen() {
           </Text>
           <Switch value={photos} onValueChange={setPhotos} />
         </View>
+        {canEncrypt() && (
+          <View style={styles.switchRow}>
+            <Text style={[styles.flex, { color: t.text }]}>
+              🔒 Protect with a password
+            </Text>
+            <Switch value={lock} onValueChange={setLock} />
+          </View>
+        )}
+        {lock && (
+          <>
+            <TextInput
+              value={password}
+              onChangeText={setPassword}
+              placeholder="Password (6+ characters)"
+              placeholderTextColor={t.muted}
+              secureTextEntry
+              autoCapitalize="none"
+              textContentType="newPassword"
+              style={[
+                styles.input,
+                { color: t.text, backgroundColor: t.cardHi },
+              ]}
+            />
+            <TextInput
+              value={confirm}
+              onChangeText={setConfirm}
+              placeholder="Same password again"
+              placeholderTextColor={t.muted}
+              secureTextEntry
+              autoCapitalize="none"
+              textContentType="newPassword"
+              style={[
+                styles.input,
+                { color: t.text, backgroundColor: t.cardHi },
+              ]}
+            />
+            <Text style={[styles.body, { color: t.warning }]}>
+              Without this password the backup can't be opened — not even by us.
+              Keep it somewhere safe.
+            </Text>
+          </>
+        )}
         <Pressable
           onPress={backup}
           disabled={!!busy || !supported}
@@ -205,6 +298,47 @@ export default function BackupScreen() {
         </Pressable>
       </View>
 
+      {locked && (
+        <View style={[card, { borderColor: t.accent }]}>
+          <Text style={[styles.title, { color: t.text }]}>
+            🔒 This backup has a password
+          </Text>
+          <TextInput
+            value={unlockWith}
+            onChangeText={setUnlockWith}
+            onSubmitEditing={unlock}
+            placeholder="Backup password"
+            placeholderTextColor={t.muted}
+            secureTextEntry
+            autoCapitalize="none"
+            autoFocus
+            style={[styles.input, { color: t.text, backgroundColor: t.cardHi }]}
+          />
+          <View style={styles.row}>
+            <Pressable
+              onPress={() => setLocked(null)}
+              style={[styles.button, styles.outline, { borderColor: t.border }]}
+            >
+              <Text style={[styles.buttonText, { color: t.text }]}>Cancel</Text>
+            </Pressable>
+            <Pressable
+              onPress={unlock}
+              disabled={!unlockWith || !!busy}
+              style={[
+                styles.button,
+                styles.flex,
+                { backgroundColor: t.accent },
+                (!unlockWith || !!busy) && styles.dimmed,
+              ]}
+            >
+              <Text style={[styles.buttonText, { color: t.onAccent }]}>
+                Unlock
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      )}
+
       {busy && (
         <View style={styles.busy}>
           <ActivityIndicator />
@@ -237,4 +371,11 @@ const styles = StyleSheet.create({
   buttonText: { fontWeight: '800', fontSize: 15 },
   dimmed: { opacity: 0.5 },
   busy: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  input: {
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 15,
+  },
+  row: { flexDirection: 'row', gap: 10 },
 });

@@ -19,7 +19,7 @@ import Avatar from '../components/Avatar';
 import { config } from '../config';
 import { useAuth } from '../lib/auth/AuthContext';
 import { CURRENCY_NAMES, useConversion } from '../lib/currency';
-import { clearExpenses } from '../lib/db';
+import { wipeEverything } from '../lib/dataOwner';
 import { usePaymentNotifications } from '../lib/notifications';
 import { useSubscription } from '../lib/subscription';
 import { type ThemeMode, useTheme, useThemeMode } from '../lib/theme';
@@ -69,7 +69,7 @@ export default function AccountScreen() {
   const confirmDelete = () =>
     Alert.alert(
       'Delete your account?',
-      'Your account and every expense on this phone will be permanently deleted. This cannot be undone.',
+      'Your account and everything Expences keeps on this phone (expenses, recurring payments, budgets, categories, salary) will be permanently deleted. This cannot be undone.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -79,7 +79,8 @@ export default function AccountScreen() {
             setBusy('delete');
             try {
               await deleteAccount();
-              await clearExpenses().catch(() => {});
+              // Everything: expenses, recurring payments, budgets, categories, salary…
+              await wipeEverything().catch(() => {});
             } catch (e) {
               setBusy(null);
               Alert.alert(
@@ -194,6 +195,16 @@ export default function AccountScreen() {
         <Row
           label="🔁 Recurring payments"
           onPress={() => navigation.navigate('Recurring')}
+          divider
+        />
+        <Row
+          label="🐷 Savings goals"
+          onPress={() => navigation.navigate('Goals')}
+          divider
+        />
+        <Row
+          label="🤝 Lent & borrowed"
+          onPress={() => navigation.navigate('Debts')}
           divider
         />
         <Row

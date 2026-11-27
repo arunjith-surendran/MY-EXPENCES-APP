@@ -55,6 +55,22 @@ export async function budgetProgress(
     .sort((a, b) => b.spent / b.budget - a.spent / a.budget);
 }
 
+/**
+ * At this month's pace, the day the budget runs out, or null if it won't (or already has).
+ * Pure: `day` is today's day of the month, `days` the month's length.
+ */
+export function runsOutOn(
+  spent: number,
+  budget: number,
+  day: number,
+  days: number,
+): number | null {
+  if (budget <= 0 || spent <= 0 || spent >= budget || day < 3) return null;
+  const perDay = spent / day;
+  const on = Math.ceil(budget / perDay);
+  return on <= days ? on : null;
+}
+
 /** The highest alert level reached (0, 0.8 or 1). Pure, for tests. */
 export function levelReached(spent: number, budget: number): number {
   let reached = 0;

@@ -7,12 +7,14 @@ import {
   budgetProgress,
   checkBudgetAlerts,
   listBudgets,
+  runsOutOn,
   setBudget,
 } from '../lib/budgets';
 import { listMonthCategoryTotals } from '../lib/db';
-import { monthKey, monthLabel } from '../lib/months';
+import { monthKey, monthLabel, ordinal } from '../lib/months';
 import { formatMoney, parseAmount } from '../lib/parse';
 import { categoryStyle, useTheme } from '../lib/theme';
+import { useFeatureUse } from '../lib/usage';
 
 /**
  * A monthly limit per category. The dashboard shows how much of each is used, and a
@@ -20,6 +22,7 @@ import { categoryStyle, useTheme } from '../lib/theme';
  */
 export default function BudgetsScreen() {
   const t = useTheme();
+  useFeatureUse('budgets');
   const categories = useCategories();
   const month = monthKey();
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -152,6 +155,32 @@ export default function BudgetsScreen() {
                         ratio * 100,
                       )}% used`}
                 </Text>
+                {(() => {
+                  const d = new Date();
+                  const on = runsOutOn(
+                    s,
+                    budget,
+                    d.getDate(),
+                    new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate(),
+                  );
+                  return on ? (
+                    <Text style={[styles.meta, { color: t.warning }]}>
+                      ⚠️ At this pace it runs out on the {ordinal(on)}. Spend{' '}
+                      {formatMoney(
+                        (budget - s) /
+                          Math.max(
+                            1,
+                            new Date(
+                              d.getFullYear(),
+                              d.getMonth() + 1,
+                              0,
+                            ).getDate() - d.getDate(),
+                          ),
+                      )}{' '}
+                      a day or less to stay within it.
+                    </Text>
+                  ) : null;
+                })()}
               </>
             )}
           </View>

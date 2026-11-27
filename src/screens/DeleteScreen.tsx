@@ -140,7 +140,9 @@ export default function DeleteScreen({ route }: Props) {
               const removed = await deleteExpensesByIds(ids);
               load();
               showUndo({
-                message: `${removed} expense${removed === 1 ? '' : 's'} deleted`,
+                message: `${removed} expense${
+                  removed === 1 ? '' : 's'
+                } deleted`,
                 ids,
                 onUndone: load,
               });

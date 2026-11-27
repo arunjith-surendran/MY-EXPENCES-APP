@@ -69,7 +69,82 @@ const DATE_PATTERNS: {
       return mon == null ? null : mk(+m[3], mon, +m[2]);
     },
   },
+  // 05OCT26, 05OCT2026
+  {
+    re: /\b(\d{2})([A-Za-z]{3})(\d{4}|\d{2})\b/,
+    parse: m => {
+      const mon = MONTHS[m[2].toLowerCase()];
+      return mon == null ? null : mk(year(m[3]), mon, +m[1]);
+    },
+  },
 ];
+
+/**
+ * Card statements often leave the year out ("05 Oct", "05/10"). These are only tried at
+ * the start of a line, with the year taken from the statement (see yearHint).
+ */
+const YEARLESS_PATTERNS: {
+  re: RegExp;
+  parse: (m: RegExpMatchArray, y: number) => Date | null;
+}[] = [
+  // 05 Oct, 05-OCT, 5 October
+  {
+    re: /^(?:\d{1,3}\s+)?(\d{1,2})[\s-]([A-Za-z]{3,9})\b/,
+    parse: (m, y) => {
+      const mon = MONTHS[m[2].slice(0, 3).toLowerCase()];
+      return mon == null ? null : mk(y, mon, +m[1]);
+    },
+  },
+  // Oct 05
+  {
+    re: /^(?:\d{1,3}\s+)?([A-Za-z]{3,9})\s(\d{1,2})\b/,
+    parse: (m, y) => {
+      const mon = MONTHS[m[1].slice(0, 3).toLowerCase()];
+      return mon == null ? null : mk(y, mon, +m[2]);
+    },
+  },
+  // 05/10 (day first, as UAE banks print it)
+  {
+    re: /^(?:\d{1,3}\s+)?(\d{1,2})\/(\d{1,2})(?![/\d])/,
+    parse: (m, y) => mk(y, +m[2] - 1, +m[1]),
+  },
+];
+
+/** The statement's year: the most common 20xx year in it, else this year. */
+export function yearHint(text: string, now = new Date()): number {
+  const counts = new Map<number, number>();
+  for (const m of text.matchAll(/\b(20\d{2})\b/g)) {
+    const y = Number(m[1]);
+    if (y <= now.getFullYear() + 1) counts.set(y, (counts.get(y) ?? 0) + 1);
+  }
+  let best = now.getFullYear();
+  let most = 0;
+  for (const [y, n] of counts) {
+    if (n > most) {
+      best = y;
+      most = n;
+    }
+  }
+  return best;
+}
+
+/** A date at the start of a line without a year; December lines in a January statement go back a year. */
+function findYearlessDate(
+  line: string,
+  hint: number,
+  now = new Date(),
+): { date: Date; index: number; length: number } | null {
+  for (const p of YEARLESS_PATTERNS) {
+    const m = line.match(p.re);
+    if (!m) continue;
+    let date = p.parse(m, hint);
+    if (date && date.getTime() > now.getTime() + 2 * 86_400_000) {
+      date = p.parse(m, hint - 1);
+    }
+    if (date) return { date, index: 0, length: m[0].length };
+  }
+  return null;
+}
 
 function year(s: string) {
   const n = Number(s);
@@ -156,6 +231,7 @@ export function cleanMerchant(desc: string): string {
 type Row = { date: Date; text: string };
 
 function textRows(text: string): { rows: Row[]; opening: number | null } {
+  const hint = yearHint(text);
   const rows: Row[] = [];
   let opening: number | null = null;
   let current: Row | null = null;
@@ -167,7 +243,7 @@ function textRows(text: string): { rows: Row[]; opening: number | null } {
       const nums = moneyIn(line);
       if (nums.length && opening == null) opening = nums[nums.length - 1].value;
     }
-    const found = findDate(line);
+    const found = findDate(line) ?? findYearlessDate(line, hint);
     // A transaction line starts with its date (allow a short serial number before it).
     if (found && found.index <= 6) {
       current = { date: found.date, text: line };

@@ -39,6 +39,7 @@ import PrivacyIntro from './src/components/PrivacyIntro';
 import { withPro } from './src/components/ProLock';
 import Splash from './src/components/Splash';
 import TabBar, { BottomBar, type TabName } from './src/components/TabBar';
+import DataOwnerGate from './src/components/DataOwnerGate';
 import { UndoProvider } from './src/components/UndoToast';
 import UpdateGate from './src/components/UpdateGate';
 import { AuthProvider, useAuth } from './src/lib/auth/AuthContext';
@@ -63,6 +64,8 @@ import AddScreen from './src/screens/AddScreen';
 import BackupScreen from './src/screens/BackupScreen';
 import BudgetsScreen from './src/screens/BudgetsScreen';
 import CategoriesScreen from './src/screens/CategoriesScreen';
+import DebtsScreen from './src/screens/DebtsScreen';
+import GoalsScreen from './src/screens/GoalsScreen';
 import InsightsScreen from './src/screens/InsightsScreen';
 import RecurringScreen from './src/screens/RecurringScreen';
 import TrashScreen from './src/screens/TrashScreen';
@@ -117,6 +120,8 @@ export type RootStackParamList = {
   Trash: undefined;
   Backup: undefined;
   Insights: { month?: string } | undefined;
+  Goals: undefined;
+  Debts: undefined;
   Paywall: undefined;
   Support: undefined;
   Notifications: undefined;
@@ -237,6 +242,14 @@ const ProImportScreen = withPro(ImportScreen, {
   title: 'Bank statement import',
   body: "Fill in whole months at once from your bank's PDF or CSV statement.",
 });
+const ProInsightsScreen = withPro(InsightsScreen, {
+  title: 'Insights',
+  body: 'See what changed against last month, your top merchants and your busiest days.',
+});
+const ProBudgetsScreen = withPro(BudgetsScreen, {
+  title: 'Category budgets',
+  body: 'Set a monthly limit per category and get a heads-up at 80% and when it runs out.',
+});
 const ProSalaryScreen = withPro(SalaryScreen, {
   title: 'Salary budget',
   body: 'See how much is left, what you can safely spend per day, and how much you save.',
@@ -257,6 +270,7 @@ const linking: LinkingOptions<RootStackParamList> = {
         },
       },
       Add: 'add',
+      Search: 'search',
       Month: 'month/:month',
       Salary: 'salary',
       Import: 'import',
@@ -342,6 +356,8 @@ export default function App() {
                 <UndoProvider>
                   <Main state={state} />
                 </UndoProvider>
+                {/* Under the lock, so it waits for Face ID. */}
+                <DataOwnerGate ready={state === 'ready'} />
                 <AppLock ready={state === 'ready'} revealed={splashDone} />
                 {showIntro && (
                   <PrivacyIntro onDone={finishIntro} paused={!splashDone} />
@@ -452,6 +468,8 @@ function Main({ state }: { state: 'loading' | 'ready' | Error }) {
           <Stack.Navigator
             screenLayout={withBottomBar}
             screenOptions={{
+              // Just the back arrow, not the previous screen's name ("Tabs").
+              headerBackButtonDisplayMode: 'minimal',
               headerShadowVisible: false,
               headerTintColor: t.accent,
               headerTitleStyle: { color: t.text, fontWeight: '700' },
@@ -500,7 +518,7 @@ function Main({ state }: { state: 'loading' | 'ready' | Error }) {
                 />
                 <Stack.Screen
                   name="Budgets"
-                  component={BudgetsScreen}
+                  component={ProBudgetsScreen}
                   options={{ title: 'Budgets' }}
                 />
                 <Stack.Screen
@@ -520,8 +538,18 @@ function Main({ state }: { state: 'loading' | 'ready' | Error }) {
                 />
                 <Stack.Screen
                   name="Insights"
-                  component={InsightsScreen}
+                  component={ProInsightsScreen}
                   options={{ title: 'Insights' }}
+                />
+                <Stack.Screen
+                  name="Goals"
+                  component={GoalsScreen}
+                  options={{ title: 'Savings goals' }}
+                />
+                <Stack.Screen
+                  name="Debts"
+                  component={DebtsScreen}
+                  options={{ title: 'Lent & borrowed' }}
                 />
                 <Stack.Screen
                   name="Delete"

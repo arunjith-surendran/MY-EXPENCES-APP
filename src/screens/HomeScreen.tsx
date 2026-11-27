@@ -48,6 +48,7 @@ import {
   monthKey,
   monthLabel,
   monthRange,
+  ordinal,
   shiftMonth,
   startOfToday,
 } from '../lib/months';
@@ -59,9 +60,10 @@ import {
   type GroupTotals,
   weekdayAverages,
 } from '../lib/insights';
-import { budgetProgress, type BudgetProgress } from '../lib/budgets';
+import { budgetProgress, type BudgetProgress, runsOutOn } from '../lib/budgets';
 import { useCategories } from '../lib/categories';
 import { useConversion } from '../lib/currency';
+import { useDataChanged } from '../lib/dataEvents';
 import { runUpkeep } from '../lib/upkeep';
 import {
   askPermissionOnce,
@@ -80,6 +82,7 @@ import {
   useTheme,
   useThemeMode,
 } from '../lib/theme';
+import { useTrackFeature } from '../lib/usage';
 import { SEEN_KEY } from './SupportScreen';
 
 type Props = TabProps<'Home'>;
@@ -99,6 +102,7 @@ const shortMonth = (key: string) => {
 /** Dashboard across all months. Tap a month (list or chart) to open its full detail. */
 export default function HomeScreen({ navigation }: Props) {
   const t = useTheme();
+  const track = useTrackFeature();
   const { mode, setMode } = useThemeMode();
   const { money } = useSalaryPrivacy();
   const { plan, hasPro, trialDaysLeft } = useSubscription();
@@ -122,6 +126,15 @@ export default function HomeScreen({ navigation }: Props) {
   const [salary, setSalaryInfo] = useState<SalaryInfo | null>(null);
 
   const [budgets, setBudgets] = useState<BudgetProgress[]>([]);
+  const paceDay = (b: BudgetProgress) => {
+    const d = new Date();
+    return runsOutOn(
+      b.spent,
+      b.budget,
+      d.getDate(),
+      new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate(),
+    );
+  };
   const categoryList = useCategories();
 
   const load = useCallback(() => {
@@ -182,6 +195,7 @@ export default function HomeScreen({ navigation }: Props) {
     runUpkeep().finally(load);
   }, [load]);
   useFocusEffect(refresh);
+  useDataChanged(load);
 
   // Payments saved by the Wallet automation happen in the background; refresh on return.
   useEffect(() => {
@@ -302,8 +316,9 @@ export default function HomeScreen({ navigation }: Props) {
       Alert.alert('Nothing to export', 'No expenses recorded yet.');
       return;
     }
+    track('export');
     await Share.share({ title: 'All expenses', message: toCsv(rows) });
-  }, []);
+  }, [track]);
 
   const chooseAppearance = useCallback(() => {
     const modes: [ThemeMode, string][] = [
@@ -340,6 +355,8 @@ export default function HomeScreen({ navigation }: Props) {
       ['Insights', () => navigation.navigate('Insights')],
       ['Budgets', () => navigation.navigate('Budgets')],
       ['Recurring payments', () => navigation.navigate('Recurring')],
+      ['Savings goals', () => navigation.navigate('Goals')],
+      ['Lent & borrowed', () => navigation.navigate('Debts')],
       ['Categories', () => navigation.navigate('Categories')],
       ['Import bank statement', () => navigation.navigate('Import')],
       ['Export all (CSV)', exportAll],
@@ -534,6 +551,8 @@ export default function HomeScreen({ navigation }: Props) {
                   ['📊', 'Insights', () => navigation.navigate('Insights')],
                   ['🎯', 'Budgets', () => navigation.navigate('Budgets')],
                   ['🔁', 'Recurring', () => navigation.navigate('Recurring')],
+                  ['🐷', 'Goals', () => navigation.navigate('Goals')],
+                  ['🤝', 'Lent & borrowed', () => navigation.navigate('Debts')],
                   ['🏷️', 'Categories', () => navigation.navigate('Categories')],
                   ['🛟', 'Backup', () => navigation.navigate('Backup')],
                 ] as const
@@ -757,6 +776,11 @@ export default function HomeScreen({ navigation }: Props) {
                           ]}
                         />
                       </View>
+                      {paceDay(b) && (
+                        <Text style={[styles.budgetMeta, { color: t.warning }]}>
+                          At this pace it runs out on the {ordinal(paceDay(b)!)}
+                        </Text>
+                      )}
                     </View>
                   );
                 })}
