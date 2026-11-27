@@ -150,3 +150,44 @@ describe('more statement layouts', () => {
     expect(new Date(txns[0].date).getFullYear()).toBe(2025);
   });
 });
+
+describe('Arabic statements', () => {
+  // What the layout reader (ios/Expences/StatementLayout.h) produced from a generated
+  // right-to-left Arabic statement PDF: rows in reading order, date first.
+  const arabic = [
+    'تفاصيل كشف الحساب',
+    'الفترة من 01/11/2026 إلى 30/11/2026',
+    'التاريخ   الوصف   مدين   دائن   الرصيد',
+    'الرصيد الافتتاحي   5,000.00',
+    '03/11/2026   شراء كارفور دبي   245.50   4,754.50',
+    '04/11/2026   راتب شهر نوفمبر   12,000.00   16,754.50',
+    '05/11/2026   ENOC 1023 DUBAI   80.00   16,674.50',
+  ].join('\n');
+
+  it('reads the rows, money out and in, from the running balance', () => {
+    const txns = parseStatement(arabic);
+    expect(txns.map(x => [day(x), x.amount, x.kind])).toEqual([
+      [3, 245.5, 'debit'],
+      [4, 12000, 'credit'],
+      [5, 80, 'debit'],
+    ]);
+    expect(isSalary(txns[1])).toBe(true);
+    expect(txns[0].merchant).toBe('شراء كارفور دبي');
+  });
+
+  it('reads Arabic-Indic digits', () => {
+    const txns = parseStatement(
+      'الرصيد الافتتاحي ١٬٠٠٠٫٠٠\n٠٣/١١/٢٠٢٦   مطعم   ٤٥٫٥٠   ٩٥٤٫٥٠',
+    );
+    expect(txns).toHaveLength(1);
+    expect(txns[0]).toMatchObject({ amount: 45.5, kind: 'debit' });
+  });
+});
+
+describe('Arabic month names', () => {
+  it('reads "03 نوفمبر 2026"', () => {
+    const txns = parseStatement('03 نوفمبر 2026   مطعم البيك   38.00');
+    expect(txns).toHaveLength(1);
+    expect(new Date(txns[0].date).getMonth()).toBe(10);
+  });
+});

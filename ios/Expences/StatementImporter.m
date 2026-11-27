@@ -1,6 +1,7 @@
 #import <CommonCrypto/CommonCrypto.h>
 #import <CommonCrypto/CommonKeyDerivation.h>
 #import <PDFKit/PDFKit.h>
+#import "StatementLayout.h"
 #import <Security/Security.h>
 #import <React/RCTBridgeModule.h>
 #import <React/RCTUtils.h>
@@ -235,85 +236,6 @@ RCT_EXPORT_METHOD(extractRawText
   [self readPath:path password:password layout:NO resolve:resolve reject:reject];
 }
 
-/**
- * The page's text rebuilt line by line from where each character sits, so a table row
- * ("05/11/2026  CARREFOUR  45.00  1,234.56") comes out as one line even when the PDF
- * stores its columns separately (PDFKit's `string` then lists all dates, then all amounts).
- */
-static NSString *LayoutText(PDFPage *page)
-{
-  NSString *s = page.string;
-  NSUInteger n = s.length;
-  if (n == 0) return @"";
-
-  typedef struct {
-    CGFloat x, w, midY, h;
-    NSUInteger index;
-  } Glyph;
-  Glyph *glyphs = malloc(sizeof(Glyph) * n);
-  NSUInteger count = 0;
-  NSCharacterSet *space = [NSCharacterSet whitespaceAndNewlineCharacterSet];
-  for (NSUInteger i = 0; i < n; i++) {
-    if ([space characterIsMember:[s characterAtIndex:i]]) continue;
-    CGRect b = [page characterBoundsAtIndex:(NSInteger)i];
-    if (CGRectIsEmpty(b) || CGRectIsNull(b)) continue;
-    glyphs[count++] = (Glyph){CGRectGetMinX(b), CGRectGetWidth(b), CGRectGetMidY(b),
-                              CGRectGetHeight(b), i};
-  }
-  if (count == 0) {
-    free(glyphs);
-    return s;
-  }
-
-  // Top of the page first (PDF y grows upwards), then left to right.
-  NSMutableArray<NSValue *> *order = [NSMutableArray arrayWithCapacity:count];
-  for (NSUInteger i = 0; i < count; i++) [order addObject:@(i)];
-  [order sortUsingComparator:^NSComparisonResult(NSNumber *a, NSNumber *b) {
-    Glyph ga = glyphs[a.unsignedIntegerValue], gb = glyphs[b.unsignedIntegerValue];
-    if (fabs(ga.midY - gb.midY) > MIN(ga.h, gb.h) * 0.5) {
-      return ga.midY > gb.midY ? NSOrderedAscending : NSOrderedDescending;
-    }
-    return ga.x < gb.x ? NSOrderedAscending : (ga.x > gb.x ? NSOrderedDescending : NSOrderedSame);
-  }];
-
-  NSMutableString *out = [NSMutableString string];
-  NSMutableArray<NSNumber *> *line = [NSMutableArray array];
-  __block CGFloat lineY = 0, lineH = 0;
-  void (^flush)(void) = ^{
-    if (line.count == 0) return;
-    [line sortUsingComparator:^NSComparisonResult(NSNumber *a, NSNumber *b) {
-      CGFloat xa = glyphs[a.unsignedIntegerValue].x, xb = glyphs[b.unsignedIntegerValue].x;
-      return xa < xb ? NSOrderedAscending : (xa > xb ? NSOrderedDescending : NSOrderedSame);
-    }];
-    CGFloat lastRight = -1;
-    for (NSNumber *k in line) {
-      Glyph g = glyphs[k.unsignedIntegerValue];
-      if (lastRight >= 0) {
-        CGFloat gap = g.x - lastRight;
-        // A word gap gets a space; a column gap gets a few, so cells stay apart.
-        if (gap > g.h * 1.5) [out appendString:@"   "];
-        else if (gap > g.h * 0.18) [out appendString:@" "];
-      }
-      [out appendString:[s substringWithRange:[s rangeOfComposedCharacterSequenceAtIndex:g.index]]];
-      lastRight = g.x + g.w;
-    }
-    [out appendString:@"\n"];
-    [line removeAllObjects];
-  };
-  for (NSNumber *k in order) {
-    Glyph g = glyphs[k.unsignedIntegerValue];
-    if (line.count > 0 && fabs(g.midY - lineY) > MIN(g.h, lineH) * 0.5) flush();
-    if (line.count == 0) {
-      lineY = g.midY;
-      lineH = g.h;
-    }
-    [line addObject:k];
-  }
-  flush();
-  free(glyphs);
-  return out;
-}
-
 - (void)readPath:(NSString *)path
         password:(NSString *)password
           layout:(BOOL)layout
@@ -350,7 +272,7 @@ static NSString *LayoutText(PDFPage *page)
     NSMutableString *text = [NSMutableString string];
     for (NSInteger i = 0; i < doc.pageCount; i++) {
       PDFPage *pdfPage = [doc pageAtIndex:i];
-      NSString *page = layout ? LayoutText(pdfPage) : pdfPage.string;
+      NSString *page = layout ? StatementLayoutText(pdfPage) : pdfPage.string;
       if (page.length) {
         [text appendString:page];
         [text appendString:@"\n"];

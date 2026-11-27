@@ -34,6 +34,26 @@ const MONTHS: Record<string, number> = {
   dec: 11,
 };
 
+/** Arabic month names as UAE banks print them, including spellings without hamza. */
+const AR_MONTHS: Record<string, number> = {
+  يناير: 0,
+  فبراير: 1,
+  مارس: 2,
+  أبريل: 3,
+  ابريل: 3,
+  إبريل: 3,
+  مايو: 4,
+  يونيو: 5,
+  يوليو: 6,
+  أغسطس: 7,
+  اغسطس: 7,
+  سبتمبر: 8,
+  أكتوبر: 9,
+  اكتوبر: 9,
+  نوفمبر: 10,
+  ديسمبر: 11,
+};
+
 const DATE_PATTERNS: {
   re: RegExp;
   parse: (m: RegExpMatchArray) => Date | null;
@@ -68,6 +88,11 @@ const DATE_PATTERNS: {
       const mon = MONTHS[m[1].slice(0, 3).toLowerCase()];
       return mon == null ? null : mk(+m[3], mon, +m[2]);
     },
+  },
+  // 03 نوفمبر 2026 (Arabic month names)
+  {
+    re: new RegExp(`(\\d{1,2})[\\s-](${Object.keys(AR_MONTHS).join('|')})[\\s-،,]*(\\d{4}|\\d{2})`),
+    parse: m => mk(year(m[3]), AR_MONTHS[m[2]], +m[1]),
   },
   // 05OCT26, 05OCT2026
   {
@@ -189,14 +214,27 @@ function moneyIn(s: string): Money[] {
   return out;
 }
 
+// Arabic words have no \b word boundaries in JS regexes, so they're matched as plain text.
 const CREDIT_WORDS =
-  /\b(salary|payroll|wps|credited|refund|reversal|cash ?back|deposit|inward|transfer from|received|interest paid)\b/i;
+  /\b(salary|payroll|wps|credited|refund|reversal|cash ?back|deposit|inward|transfer from|received|interest paid)\b|راتب|رواتب|إيداع|ايداع|تحويل وارد|حوالة واردة|استرداد|مسترد|فائدة مدفوعة/i;
 const SKIP_ROWS =
-  /\b(opening|closing|available|ledger)\s+balance\b|brought forward|carried forward|balance b\/f|balance c\/f|^total\b|statement (period|date)/i;
+  /\b(opening|closing|available|ledger)\s+balance\b|brought forward|carried forward|balance b\/f|balance c\/f|^total\b|statement (period|date)|الرصيد الافتتاحي|رصيد افتتاحي|الرصيد الختامي|رصيد ختامي|الرصيد المتاح|رصيد مرحل|الرصيد المرحل|^المجموع|^الإجمالي/i;
+/** "Opening balance" in English or Arabic: its amount is where running balances start. */
+const OPENING =
+  /opening balance|balance brought forward|balance b\/f|الرصيد الافتتاحي|رصيد افتتاحي|رصيد مرحل|الرصيد المرحل/i;
 // A line made only of column headings, e.g. "Debit Credit Balance".
 const HEADER_ONLY =
-  /^(?:(?:date|value date|posting date|description|narration|details|particulars|debit|credit|withdrawals?|deposits?|balance|amount|aed|ref(?:erence)?|cheque no\.?)\s*)+$/i;
-const SALARY = /\b(salary|payroll|wps|sal\b)/i;
+  /^(?:(?:date|value date|posting date|description|narration|details|particulars|debit|credit|withdrawals?|deposits?|balance|amount|aed|ref(?:erence)?|cheque no\.?|التاريخ|تاريخ القيمة|تاريخ العملية|الوصف|التفاصيل|البيان|مدين|دائن|الرصيد|المبلغ|المرجع|سحب|إيداع|درهم)\s*)+$/i;
+const SALARY = /\b(salary|payroll|wps|sal\b)|راتب|رواتب/i;
+
+/** Arabic-Indic digits and separators ("١٬٢٣٤٫٥٠") to "1,234.50". */
+export function westernDigits(text: string): string {
+  return text
+    .replace(/[\u0660-\u0669]/g, d => String(d.charCodeAt(0) - 0x0660))
+    .replace(/[\u06F0-\u06F9]/g, d => String(d.charCodeAt(0) - 0x06f0))
+    .replace(/\u066B/g, '.')
+    .replace(/\u066C/g, ',');
+}
 
 export function isSalary(t: StatementTxn) {
   return t.kind === 'credit' && SALARY.test(t.description);
@@ -239,7 +277,7 @@ function textRows(text: string): { rows: Row[]; opening: number | null } {
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.replace(/\s+/g, ' ').trim();
     if (!line) continue;
-    if (/opening balance|balance brought forward|balance b\/f/i.test(line)) {
+    if (OPENING.test(line)) {
       const nums = moneyIn(line);
       if (nums.length && opening == null) opening = nums[nums.length - 1].value;
     }
@@ -418,7 +456,8 @@ function fromCsv(text: string): StatementTxn[] | null {
   return out;
 }
 
-export function parseStatement(text: string): StatementTxn[] {
+export function parseStatement(raw: string): StatementTxn[] {
+  const text = westernDigits(raw);
   const csv = fromCsv(text);
   if (csv && csv.length) return csv;
   const { rows, opening } = textRows(text);
