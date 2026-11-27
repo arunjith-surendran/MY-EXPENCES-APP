@@ -1,6 +1,7 @@
 import { open, type DB } from '@op-engineering/op-sqlite';
 
 import { shiftMonth } from './months';
+import { isSpending } from './parse';
 import { parseSearch, tagsIn } from './searchQuery';
 
 export type PaymentMethod = 'card' | 'cash';
@@ -31,9 +32,16 @@ export const aedOf = (e: Pick<Expense, 'amount' | 'currency' | 'aed_amount'>) =>
 export const sumAed = (items: Expense[]) =>
   items.reduce((sum, e) => sum + (aedOf(e) ?? 0), 0);
 
+/** The same, counting only spending (not transfers or cash withdrawals). */
+export const sumSpent = (items: Expense[]) =>
+  sumAed(items.filter(e => isSpending(e.category)));
+
 /** SQL for the same, for SUM(): AED amounts, converted ones, and 0 for the rest. */
 const AED_SQL =
   "COALESCE(CASE WHEN currency = 'AED' THEN amount ELSE aed_amount END, 0)";
+
+/** True for spending; transfers and cash withdrawals move money but aren't spent (parse.ts). */
+const SPENDING_SQL = "category NOT IN ('Transfers', 'Cash withdrawal')";
 
 /** Columns copied between `expenses` and the `deleted_expenses` bin. */
 const EXPENSE_COLUMNS =
@@ -57,7 +65,7 @@ export type MonthSummary = {
   count: number;
 };
 
-const DATABASE_VERSION = 7;
+const DATABASE_VERSION = 8;
 
 let db: DB | null = null;
 
@@ -214,6 +222,22 @@ export async function migrateDbIfNeeded() {
       due_at INTEGER,
       settled_at INTEGER
     )`);
+  }
+  if (current < 8) {
+    // Money in: transfers from others, refunds (salary has its own table).
+    await d.execute(`CREATE TABLE IF NOT EXISTS income (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      amount REAL NOT NULL,
+      source TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'other',
+      note TEXT,
+      created_at INTEGER NOT NULL
+    )`);
+    await d.execute(
+      'CREATE INDEX IF NOT EXISTS idx_income_created_at ON income (created_at)',
+    );
+    // Receipt photos move out of the database into files (Library/receipts/<file>).
+    await addColumnIfMissing(d, 'receipts', 'file', 'TEXT');
   }
   await d.execute(`PRAGMA user_version = ${DATABASE_VERSION}`);
 }
@@ -515,20 +539,20 @@ export async function clearSalary(month: string) {
 }
 
 /**
- * True if an expense with the same amount already exists within ±2 days of `at`
- * (an Apple Pay tap and the bank's posting date can differ by a day or two).
+ * Expenses with the same amount within ±2 days of `at`, for spotting a statement line
+ * that's already logged (compare the merchant with sameShop in merchants.ts).
  */
-export async function hasSimilarExpense(
+export async function listSimilarExpenses(
   amount: number,
   at: number,
-): Promise<boolean> {
+): Promise<Pick<Expense, 'merchant' | 'source'>[]> {
   const window = 2 * 86_400_000;
   const { rows } = await getDb().execute(
-    `SELECT COUNT(*) AS n FROM expenses
+    `SELECT merchant, source FROM expenses
      WHERE ABS(amount - ?) < 0.005 AND created_at BETWEEN ? AND ?`,
     [amount, at - window, at + window],
   );
-  return Number(rows[0]?.n ?? 0) > 0;
+  return rows as unknown as Pick<Expense, 'merchant' | 'source'>[];
 }
 
 /** Inserts many expenses in one transaction. Returns how many were added. */
@@ -609,8 +633,8 @@ export async function listExpenses(
 export async function listMonthSummaries(): Promise<MonthSummary[]> {
   const { rows } = await getDb().execute(
     `SELECT strftime('%Y-%m', created_at / 1000, 'unixepoch', 'localtime') AS month,
-            SUM(${AED_SQL}) AS total,
-            SUM(CASE WHEN method = 'cash' THEN ${AED_SQL} ELSE 0 END) AS cash,
+            SUM(CASE WHEN ${SPENDING_SQL} THEN ${AED_SQL} ELSE 0 END) AS total,
+            SUM(CASE WHEN method = 'cash' AND ${SPENDING_SQL} THEN ${AED_SQL} ELSE 0 END) AS cash,
             COUNT(*) AS count
      FROM expenses GROUP BY month ORDER BY month DESC`,
   );
@@ -631,7 +655,7 @@ export async function listDayTotals(
     `SELECT strftime('%Y-%m-%d', created_at / 1000, 'unixepoch', 'localtime') AS day,
             SUM(${AED_SQL}) AS total
      FROM expenses
-     WHERE created_at >= ? AND created_at < ?
+     WHERE created_at >= ? AND created_at < ? AND ${SPENDING_SQL}
      GROUP BY day`,
     [start, end],
   );
@@ -650,6 +674,7 @@ export async function listMonthCategoryTotals(): Promise<MonthCategoryTotal[]> {
     `SELECT strftime('%Y-%m', created_at / 1000, 'unixepoch', 'localtime') AS month,
             category, SUM(${AED_SQL}) AS total
      FROM expenses
+     WHERE ${SPENDING_SQL}
      GROUP BY month, category`,
   );
   return rows.map(r => ({
@@ -873,10 +898,7 @@ export async function purgeDeletedExpenses(
   }
   let removed = 0;
   await d.transaction(async tx => {
-    await tx.execute(
-      `DELETE FROM receipts WHERE expense_id IN (SELECT id FROM deleted_expenses ${where})`,
-      args,
-    );
+    // Their receipt photos are removed by tidyReceipts (receipts.ts), files included.
     const result = await tx.execute(
       `DELETE FROM deleted_expenses ${where}`,
       args,
@@ -914,6 +936,7 @@ export async function firstExpenseAt(): Promise<number | null> {
 /** Every table holding the user's data; wipeAllData empties them all. */
 const USER_TABLES = [
   'expenses',
+  'income',
   'deleted_expenses',
   'receipts',
   'salary',
@@ -957,8 +980,8 @@ export async function clearExpenses(range?: {
     : await getDb().execute('DELETE FROM expenses');
   if (!range) {
     // Everything means everything: the bin and receipt photos too.
+    // Receipt photos go with the next tidyReceipts (receipts.ts), files included.
     await getDb().execute('DELETE FROM deleted_expenses');
-    await getDb().execute('DELETE FROM receipts');
   }
   return result.rowsAffected;
 }

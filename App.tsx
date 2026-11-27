@@ -57,6 +57,7 @@ import AdminNotifyScreen from './src/screens/admin/AdminNotifyScreen';
 import AdminOfferNewScreen from './src/screens/admin/AdminOfferNewScreen';
 import AdminOffersScreen from './src/screens/admin/AdminOffersScreen';
 import AdminUserScreen from './src/screens/admin/AdminUserScreen';
+import AdminUsageScreen from './src/screens/admin/AdminUsageScreen';
 import AdminUsersScreen from './src/screens/admin/AdminUsersScreen';
 import AdminVersionsScreen from './src/screens/admin/AdminVersionsScreen';
 import type { UserFilter } from './src/screens/admin/ui';
@@ -144,6 +145,7 @@ export type RootStackParamList = {
   AdminChat: { userId: string; name: string };
   AdminFinance: undefined;
   AdminVersions: undefined;
+  AdminUsage: undefined;
   Welcome: undefined;
   Privacy: undefined;
 };
@@ -617,6 +619,11 @@ function Main({ state }: { state: 'loading' | 'ready' | Error }) {
                       name="AdminFinance"
                       component={AdminFinanceScreen}
                       options={{ title: 'Money' }}
+                    />
+                    <Stack.Screen
+                      name="AdminUsage"
+                      component={AdminUsageScreen}
+                      options={{ title: 'Feature usage' }}
                     />
                     <Stack.Screen
                       name="AdminVersions"

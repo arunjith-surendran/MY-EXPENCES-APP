@@ -14,7 +14,7 @@ import type { RootStackParamList } from '../../App';
 import { aedOf, type Expense, listExpenses } from '../lib/db';
 import { compareCategories, topMerchants } from '../lib/insights';
 import { monthKey, monthLabel, monthRange, shiftMonth } from '../lib/months';
-import { formatMoney } from '../lib/parse';
+import { formatMoney, isSpending } from '../lib/parse';
 import { cardShadow, categoryStyle, useTheme } from '../lib/theme';
 import { useFeatureUse } from '../lib/usage';
 
@@ -44,10 +44,12 @@ export default function InsightsScreen({ navigation, route }: Props) {
   const load = useCallback(() => {
     const a = monthRange(month);
     const b = monthRange(shiftMonth(month, -1));
+    // Transfers and cash withdrawals aren't spending.
+    const spent = (rows: Expense[]) => rows.filter(e => isSpending(e.category));
     Promise.all([listExpenses(a.start, a.end), listExpenses(b.start, b.end)])
       .then(([x, y]) => {
-        setNow(x);
-        setBefore(y);
+        setNow(spent(x));
+        setBefore(spent(y));
       })
       .catch(() => setNow([]));
   }, [month]);

@@ -35,7 +35,7 @@ import {
   listAutoLogCards,
   listDayTotals,
   listExpenses,
-  sumAed,
+  sumSpent,
   listMonthCategoryTotals,
   listMonthSummaries,
   type MonthCategoryTotal,
@@ -63,6 +63,11 @@ import {
 import { budgetProgress, type BudgetProgress, runsOutOn } from '../lib/budgets';
 import { useCategories } from '../lib/categories';
 import { useConversion } from '../lib/currency';
+import {
+  type BackupDue,
+  hideBackupCard,
+  showBackupCard,
+} from '../lib/backupReminder';
 import { useDataChanged } from '../lib/dataEvents';
 import { runUpkeep } from '../lib/upkeep';
 import {
@@ -126,6 +131,7 @@ export default function HomeScreen({ navigation }: Props) {
   const [salary, setSalaryInfo] = useState<SalaryInfo | null>(null);
 
   const [budgets, setBudgets] = useState<BudgetProgress[]>([]);
+  const [backup, setBackup] = useState<BackupDue>({ due: false, days: null });
   const paceDay = (b: BudgetProgress) => {
     const d = new Date();
     return runsOutOn(
@@ -138,6 +144,9 @@ export default function HomeScreen({ navigation }: Props) {
   const categoryList = useCategories();
 
   const load = useCallback(() => {
+    showBackupCard()
+      .then(setBackup)
+      .catch(() => {});
     budgetProgress()
       .then(setBudgets)
       .catch(() => {});
@@ -156,7 +165,7 @@ export default function HomeScreen({ navigation }: Props) {
       .then(setDayTotals)
       .catch(() => {});
     listExpenses(today, today + DAY_MS)
-      .then(rows => setTodayTotal(sumAed(rows)))
+      .then(rows => setTodayTotal(sumSpent(rows)))
       .catch(() => {});
     getAutoLogSince()
       .then(since => setAutoLogOn(since != null))
@@ -576,6 +585,48 @@ export default function HomeScreen({ navigation }: Props) {
                 </Pressable>
               ))}
             </ScrollView>
+
+            {backup.due && (
+              <View
+                style={[
+                  styles.backupCard,
+                  { backgroundColor: t.card, borderColor: t.warning },
+                ]}
+              >
+                <Text style={styles.backupIcon}>🛟</Text>
+                <View style={styles.flex}>
+                  <Text style={[styles.backupTitle, { color: t.text }]}>
+                    {backup.days == null
+                      ? 'Back up your expenses'
+                      : `Last backup ${backup.days} days ago`}
+                  </Text>
+                  <Text style={[styles.backupBody, { color: t.muted }]}>
+                    They live only on this phone. A backup keeps them safe.
+                  </Text>
+                  <View style={styles.backupActions}>
+                    <Pressable
+                      onPress={() => navigation.navigate('Backup')}
+                      hitSlop={6}
+                    >
+                      <Text style={[styles.backupLink, { color: t.accent }]}>
+                        Back up now
+                      </Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => {
+                        hideBackupCard();
+                        setBackup({ due: false, days: null });
+                      }}
+                      hitSlop={6}
+                    >
+                      <Text style={[styles.backupLink, { color: t.muted }]}>
+                        Later
+                      </Text>
+                    </Pressable>
+                  </View>
+                </View>
+              </View>
+            )}
 
             {offer && (
               <Pressable
@@ -1081,6 +1132,19 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   quick: { gap: 8, paddingVertical: 12 },
+  backupCard: {
+    flexDirection: 'row',
+    gap: 12,
+    padding: 14,
+    borderRadius: 16,
+    borderWidth: 1,
+    marginBottom: 12,
+  },
+  backupIcon: { fontSize: 26 },
+  backupTitle: { fontSize: 15, fontWeight: '800' },
+  backupBody: { fontSize: 13, marginTop: 2, lineHeight: 18 },
+  backupActions: { flexDirection: 'row', gap: 20, marginTop: 8 },
+  backupLink: { fontWeight: '800' },
   budgetRow: { gap: 6, marginTop: 10 },
   budgetName: { flex: 1, fontSize: 14, fontWeight: '700' },
   budgetMeta: { fontSize: 12, fontWeight: '700' },

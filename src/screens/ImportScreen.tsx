@@ -19,7 +19,7 @@ import {
 import type { RootStackParamList } from '../../App';
 import {
   getSalaryInfo,
-  hasSimilarExpense,
+  listSimilarExpenses,
   insertExpenses,
   salaryFor,
   setSalary,
@@ -31,7 +31,9 @@ import {
   rememberCategory,
   useCategories,
 } from '../lib/categories';
-import { formatMoney, guessCategory } from '../lib/parse';
+import { addIncome, incomeKind } from '../lib/income';
+import { sameShop } from '../lib/merchants';
+import { formatMoney, guessCategory, isSpending } from '../lib/parse';
 import {
   isSalary,
   parseStatement,
@@ -52,7 +54,33 @@ const Importer = NativeModules.StatementImporter as {
   extractRawText?(path: string, password: string | null): Promise<string>;
   /** Reads the rendered pages with on-device OCR; missing on older builds. */
   extractOcrText?(path: string, password: string | null): Promise<string>;
+  pageCount?(path: string, password: string | null): Promise<number>;
+  extractOcrPage?(
+    path: string,
+    password: string | null,
+    page: number,
+  ): Promise<string>;
 };
+
+/** OCR page by page, reporting progress; falls back to all at once on older builds. */
+async function readPages(
+  path: string,
+  password: string | null,
+  onPage: (page: number, of: number) => void,
+): Promise<string | null> {
+  if (Importer.pageCount && Importer.extractOcrPage) {
+    const pages = Math.min(await Importer.pageCount(path, password), 60);
+    const parts: string[] = [];
+    for (let i = 0; i < pages; i++) {
+      onPage(i + 1, pages);
+      parts.push(await Importer.extractOcrPage(path, password, i));
+    }
+    return parts.join('\n');
+  }
+  return Importer.extractOcrText
+    ? Importer.extractOcrText(path, password)
+    : null;
+}
 
 type Row = StatementTxn & { key: string; duplicate: boolean };
 
@@ -83,6 +111,8 @@ export default function ImportScreen({ navigation, route }: Props) {
   const [rows, setRows] = useState<Row[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [useSalary, setUseSalary] = useState(true);
+  // Payments in (not salary) are saved as money in.
+  const [useIncome, setUseIncome] = useState(true);
   // The text read from a statement that couldn't be parsed, shown to help diagnose it.
   const [readText, setReadText] = useState<string | null>(null);
   // Merchants the user has categorised before keep that category.
@@ -97,7 +127,7 @@ export default function ImportScreen({ navigation, route }: Props) {
   const [overrides, setOverrides] = useState<Record<string, string>>({});
   const categoryList = useCategories();
   const categoryOf = (r: Row) =>
-    overrides[r.key] ?? resolveCategory(r.merchant, r.description);
+    overrides[r.key] ?? resolveCategory(r.merchant, r.description, r.amount);
 
   const changeCategory = (r: Row) => {
     const options = categoryList.all;
@@ -162,9 +192,13 @@ export default function ImportScreen({ navigation, route }: Props) {
         /\.pdf$/i.test(picked.name)
       ) {
         setBusy('Reading the pages…');
-        const seen = await Importer.extractOcrText(picked.path, password).catch(
-          () => null,
-        );
+        const seen = await readPages(picked.path, password, (page, of) =>
+          setBusy(
+            page === 1
+              ? `Reading page 1 of ${of}…\nThe first time takes a little longer.`
+              : `Reading page ${page} of ${of}…`,
+          ),
+        ).catch(() => null);
         if (seen) {
           txns = parseStatement(repairOcrText(seen));
           if (txns.length === 0)
@@ -187,16 +221,28 @@ export default function ImportScreen({ navigation, route }: Props) {
       setBusy('Checking for duplicates…');
       const withFlags: Row[] = [];
       for (const [i, txn] of txns.entries()) {
+        // Already logged: same amount within two days, at the same shop (by name).
         const duplicate =
           txn.kind === 'debit' &&
-          (await hasSimilarExpense(txn.amount, txn.date));
+          (await listSimilarExpenses(txn.amount, txn.date)).some(e =>
+            sameShop(e.merchant, txn.merchant),
+          );
         withFlags.push({ ...txn, key: String(i), duplicate });
       }
       setRows(withFlags);
+      // Transfers and cash withdrawals start unticked: they move money, they aren't spending.
       setSelected(
         new Set(
           withFlags
-            .filter(r => r.kind === 'debit' && !r.duplicate && inMonth(r))
+            .filter(
+              r =>
+                r.kind === 'debit' &&
+                !r.duplicate &&
+                inMonth(r) &&
+                isSpending(
+                  resolveCategory(r.merchant, r.description, r.amount),
+                ),
+            )
             .map(r => r.key),
         ),
       );
@@ -235,12 +281,19 @@ export default function ImportScreen({ navigation, route }: Props) {
     () => visible.filter(r => r.kind === 'credit' && !isSalary(r)),
     [visible],
   );
+  const notSpendingCount = visible.filter(
+    r => r.kind === 'debit' && !isSpending(categoryOf(r)),
+  ).length;
 
   const toggleShowAll = () => {
     const next = !showAll;
     setShowAll(next);
     const others = rows.filter(
-      r => !inMonth(r) && r.kind === 'debit' && !r.duplicate,
+      r =>
+        !inMonth(r) &&
+        r.kind === 'debit' &&
+        !r.duplicate &&
+        isSpending(categoryOf(r)),
     );
     setSelected(prev => {
       const s = new Set(prev);
@@ -302,6 +355,18 @@ export default function ImportScreen({ navigation, route }: Props) {
           await rememberCategory(r.merchant, overrides[r.key]).catch(() => {});
         }
       }
+      let incomeAdded = 0;
+      if (useIncome && otherCredits.length) {
+        incomeAdded = await addIncome(
+          otherCredits.map(r => ({
+            amount: r.amount,
+            source: r.merchant,
+            kind: incomeKind(r.description),
+            note: r.description.slice(0, 200),
+            created_at: r.date,
+          })),
+        );
+      }
       let salaryMonths = 0;
       if (useSalary && salaries.length) {
         const info = await getSalaryInfo();
@@ -321,6 +386,9 @@ export default function ImportScreen({ navigation, route }: Props) {
       Alert.alert(
         'Statement imported',
         `${added} expense(s) added` +
+          (incomeAdded
+            ? `, ${incomeAdded} payment(s) in saved as money in`
+            : '') +
           (salaryMonths
             ? ` and salary set for ${salaryMonths} month(s).`
             : '.'),
@@ -516,11 +584,39 @@ export default function ImportScreen({ navigation, route }: Props) {
               </Pressable>
             )}
             {otherCredits.length > 0 && (
+              <Pressable
+                onPress={() => setUseIncome(v => !v)}
+                style={[
+                  styles.salary,
+                  {
+                    backgroundColor: t.card,
+                    borderColor: useIncome ? t.success : t.border,
+                  },
+                ]}
+              >
+                <Check on={useIncome} color={t.success} />
+                <View style={styles.flex}>
+                  <Text style={[styles.bold, { color: t.text }]}>
+                    Save {otherCredits.length} payment
+                    {otherCredits.length === 1 ? '' : 's'} in as money in
+                  </Text>
+                  <Text style={[styles.meta, { color: t.muted }]}>
+                    {formatMoney(
+                      otherCredits.reduce((s, r) => s + r.amount, 0),
+                    )}{' '}
+                    from transfers and refunds. Shown as money in for the month,
+                    never as spending.
+                  </Text>
+                </View>
+              </Pressable>
+            )}
+            {notSpendingCount > 0 && (
               <Text
                 style={[styles.meta, styles.creditsNote, { color: t.muted }]}
               >
-                {otherCredits.length} other incoming payment(s) (refunds,
-                transfers in) are not counted as expenses.
+                {notSpendingCount} transfer(s) and cash withdrawal(s) are
+                unticked: they move money but aren't spending. Tick any that
+                were.
               </Text>
             )}
           </View>
@@ -575,6 +671,7 @@ export default function ImportScreen({ navigation, route }: Props) {
                   >
                     {category} ▾
                   </Text>
+                  {isSpending(category) ? '' : ' · not spending'}
                   {r.duplicate ? ' · already logged' : ''}
                 </Text>
               </View>

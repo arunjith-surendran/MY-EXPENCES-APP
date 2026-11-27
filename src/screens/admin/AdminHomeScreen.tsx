@@ -310,6 +310,12 @@ export default function AdminHomeScreen({ navigation }: Props) {
           onPress={() => navigation.navigate('AdminFinance')}
         />
         <Tile
+          icon="📈"
+          label="Feature usage"
+          value="What people use"
+          onPress={() => navigation.navigate('AdminUsage')}
+        />
+        <Tile
           icon="⬆️"
           label="App version"
           value="Force / suggest updates"

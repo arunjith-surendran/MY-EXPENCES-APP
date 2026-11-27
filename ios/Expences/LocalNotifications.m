@@ -126,6 +126,9 @@ RCT_EXPORT_MODULE();
   return @{
     @"version" : info[@"CFBundleShortVersionString"] ?: @"",
     @"build" : info[@"CFBundleVersion"] ?: @"",
+    // Where app files (receipt photos) live; it changes when the app is reinstalled.
+    @"libraryPath" : NSSearchPathForDirectoriesInDomains(NSLibraryDirectory, NSUserDomainMask, YES)
+                         .firstObject ?: @"",
   };
 }
 

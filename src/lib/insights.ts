@@ -1,4 +1,5 @@
 import type { MonthCategoryTotal } from './db';
+import { shopKey } from './merchants';
 import { shiftMonth } from './months';
 
 /** Needs you can't easily cut vs. lifestyle choices; everything else is "Other". */
@@ -13,6 +14,7 @@ const GROUP_OF: Record<string, SpendGroup> = {
   'Food & Dining': 'lifestyle',
   Shopping: 'lifestyle',
   Entertainment: 'lifestyle',
+  'Personal care': 'lifestyle',
 };
 
 /** A category's group; `custom` holds the groups the user chose for their own categories. */
@@ -290,14 +292,15 @@ export function compareCategories(
 
 export type MerchantTotal = { merchant: string; total: number; count: number };
 
-/** Where the money went, by merchant name (case-insensitive), top `n`. Pure. */
+/** Where the money went, by shop (spelling differences merged), top `n`. Pure. */
 export function topMerchants(
   items: { merchant: string; aed: number }[],
   n = 5,
 ): MerchantTotal[] {
   const map = new Map<string, MerchantTotal>();
   for (const { merchant, aed } of items) {
-    const key = merchant.trim().toLowerCase();
+    // "Akawi Ovendmcc" and "Akawi Oven DMCC" are one shop.
+    const key = shopKey(merchant) || merchant.trim().toLowerCase();
     const m = map.get(key) ?? { merchant: merchant.trim(), total: 0, count: 0 };
     m.total += aed;
     m.count += 1;

@@ -77,7 +77,7 @@ describe('upgrade', () => {
       ]),
     );
     const { rows: v } = await getDb().execute('PRAGMA user_version');
-    expect(v[0].user_version).toBe(7);
+    expect(v[0].user_version).toBe(8);
   });
 
   it('keeps the data of a version 5 database', async () => {
@@ -297,5 +297,52 @@ describe('goals and debts', () => {
       'SELECT (SELECT COUNT(*) FROM expenses) + (SELECT COUNT(*) FROM goals) AS n',
     );
     expect(rows[0].n).toBe(0);
+  });
+});
+
+describe('spending, money in and duplicates', () => {
+  it('leaves transfers and cash withdrawals out of spending totals', async () => {
+    await add('Carrefour', 100, { category: 'Groceries' });
+    await add('Bank transfer', 4000, { category: 'Transfers' });
+    await add('ATM', 500, { category: 'Cash withdrawal' });
+    const [m] = await listMonthSummaries();
+    expect(m).toMatchObject({ total: 100, count: 3 });
+  });
+
+  it('stores money in separately', async () => {
+    const { addIncome, listIncome } = require('../src/lib/income');
+    await addIncome([
+      {
+        amount: 500,
+        source: 'Transfer from Sam',
+        kind: 'transfer_in',
+        note: null,
+        created_at: NOV(2),
+      },
+    ]);
+    expect((await listIncome(0, NOV(30)))[0]).toMatchObject({
+      amount: 500,
+      kind: 'transfer_in',
+    });
+    expect(await listMonthSummaries()).toHaveLength(0); // not an expense
+  });
+
+  it('finds same-amount expenses near a date for the duplicate check', async () => {
+    const { listSimilarExpenses } = require('../src/lib/db');
+    await add('Akawi Oven DMCC', 12, { created_at: NOV(5) });
+    expect(await listSimilarExpenses(12, NOV(6))).toEqual([
+      { merchant: 'Akawi Oven DMCC', source: 'manual' },
+    ]);
+    expect(await listSimilarExpenses(12, NOV(9))).toEqual([]);
+  });
+
+  it('says a backup is due once there is real data and no recent backup', async () => {
+    const { backupDue } = require('../src/lib/backupReminder');
+    expect((await backupDue()).due).toBe(false); // too few expenses
+    for (let i = 0; i < 20; i++) await add(`Shop ${i}`, 1);
+    expect(await backupDue()).toEqual({ due: true, days: null });
+    const { setMeta } = require('../src/lib/db');
+    await setMeta('last_backup_at', new Date().toISOString());
+    expect((await backupDue()).due).toBe(false);
   });
 });

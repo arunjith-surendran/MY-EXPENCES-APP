@@ -1,6 +1,7 @@
 import { NativeModules, Share } from 'react-native';
 
 import { getDb } from './db';
+import { getReceiptBase64 } from './receipts';
 
 /**
  * A full backup of what's on the phone as one JSON file the user keeps (Files, iCloud
@@ -45,6 +46,7 @@ const TABLES = {
     'created_at',
   ],
   receipts: ['expense_id', 'data', 'created_at'],
+  income: ['id', 'amount', 'source', 'kind', 'note', 'created_at'],
   goals: ['id', 'name', 'target', 'deadline', 'emoji', 'created_at', 'done_at'],
   goal_entries: ['id', 'goal_id', 'amount', 'created_at'],
   debts: [
@@ -123,6 +125,17 @@ export async function createBackup(includePhotos: boolean): Promise<Backup> {
     let list = rows as unknown as Row[];
     if (table === 'meta') {
       list = list.filter(r => !LOCAL_META.includes(String(r.key)));
+    }
+    if (table === 'receipts') {
+      // Photos stored as files go into the backup as base64.
+      const out: Row[] = [];
+      for (const r of list) {
+        const data = r.data
+          ? r.data
+          : await getReceiptBase64(Number(r.expense_id)).catch(() => null);
+        if (data) out.push({ ...r, data });
+      }
+      list = out;
     }
     tables[table] = list;
   }
@@ -401,6 +414,13 @@ export async function restoreBackup(
         [String(row.person), Number(row.amount), Number(row.created_at)],
       );
       if (!rows[0]) await insertNew('debts', row);
+    }
+    for (const row of backup.tables.income ?? []) {
+      const { rows } = await tx.execute(
+        'SELECT id FROM income WHERE source = ? AND ABS(amount - ?) < 0.005 AND created_at = ?',
+        [String(row.source), Number(row.amount), Number(row.created_at)],
+      );
+      if (!rows[0]) await insertNew('income', row);
     }
   });
   return added;

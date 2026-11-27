@@ -13,7 +13,7 @@ import {
   setCategoryGroup,
   setMerchantCategory,
 } from './db';
-import { CATEGORIES, guessCategory } from './parse';
+import { CATEGORIES, guessCategory, statementCategory } from './parse';
 
 /**
  * Categories are the built-in ones plus any the user adds. User categories and the
@@ -37,6 +37,7 @@ export async function categoryFor(merchant: string): Promise<string> {
 export type CategoryResolver = (
   merchant: string,
   description?: string,
+  amount?: number,
 ) => string;
 
 /**
@@ -47,8 +48,11 @@ export async function categoryResolver(): Promise<CategoryResolver> {
   const learned = await listMerchantCategories().catch(
     () => new Map<string, string>(),
   );
-  return (merchant, description = merchant) =>
-    learned.get(merchantKey(merchant)) ?? guessCategory(description);
+  return (merchant, description = merchant, amount) =>
+    learned.get(merchantKey(merchant)) ??
+    (amount != null
+      ? statementCategory(description, amount)
+      : guessCategory(description));
 }
 
 /**

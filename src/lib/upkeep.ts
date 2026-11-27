@@ -1,7 +1,9 @@
+import { remindBackup } from './backupReminder';
 import { checkBudgetAlerts } from './budgets';
 import { convertForeignExpenses } from './currency';
 import { emitDataChanged } from './dataEvents';
 import { purgeDeletedExpenses } from './db';
+import { tidyReceipts } from './receipts';
 import { addDueRecurring } from './recurring';
 import { sendWeeklySummary } from './weekly';
 
@@ -28,6 +30,8 @@ export function runUpkeep(): Promise<number> {
       }).catch(() => 0);
       await checkBudgetAlerts();
       await sendWeeklySummary();
+      await remindBackup();
+      await tidyReceipts().catch(() => {});
       if (added > 0) emitDataChanged();
       return added;
     })().finally(() => {

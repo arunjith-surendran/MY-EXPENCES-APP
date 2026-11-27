@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { aedOf, type Expense } from '../lib/db';
+import { isSpending } from '../lib/parse';
 import { monthKey } from '../lib/months';
 import { formatMoney } from '../lib/parse';
 import { glow, useTheme } from '../lib/theme';
@@ -31,7 +32,7 @@ export default function DailyChart({
     for (const e of items) {
       const i = new Date(e.created_at).getDate() - 1;
       counts[i] += 1;
-      totals[i] += aedOf(e) ?? 0;
+      if (isSpending(e.category)) totals[i] += aedOf(e) ?? 0;
     }
     return { totals, counts };
   }, [items, daysInMonth]);

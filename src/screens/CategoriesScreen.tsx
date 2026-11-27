@@ -38,6 +38,9 @@ const BUILT_IN_GROUP: Record<string, string> = {
   'Food & Dining': 'Lifestyle',
   Shopping: 'Lifestyle',
   Entertainment: 'Lifestyle',
+  'Personal care': 'Lifestyle',
+  Transfers: 'Not spending',
+  'Cash withdrawal': 'Not spending',
   Other: 'Other',
 };
 

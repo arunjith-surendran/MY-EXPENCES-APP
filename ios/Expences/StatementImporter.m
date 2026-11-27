@@ -23,6 +23,8 @@
  *   writeFile(name, text)     -> path of a new file with that text in the temp folder
  *   encrypt(text, password)   -> { salt, iv, data, mac, iter } (base64), AES-256-CBC + HMAC-SHA256
  *   decrypt(box, password)    -> text; rejects with code "PASSWORD" if it's wrong
+ *   writeAppFile(rel, base64) / readAppFile(rel) / deleteAppFile(rel)
+ *                             -> binary files under Library/ (receipt photos), by relative path
  */
 @interface StatementImporter : NSObject <RCTBridgeModule, UIDocumentPickerDelegate>
 @property(nonatomic, copy) RCTPromiseResolveBlock pickResolve;
@@ -178,6 +180,59 @@ RCT_EXPORT_METHOD(decrypt
   });
 }
 
+/** Library/<rel>, refusing paths that try to leave it. */
+static NSString *AppFilePath(NSString *rel)
+{
+  if (rel.length == 0 || [rel containsString:@".."] || [rel hasPrefix:@"/"]) return nil;
+  NSString *library =
+      NSSearchPathForDirectoriesInDomains(NSLibraryDirectory, NSUserDomainMask, YES).firstObject;
+  return [library stringByAppendingPathComponent:rel];
+}
+
+RCT_EXPORT_METHOD(writeAppFile
+                  : (NSString *)rel base64
+                  : (NSString *)base64 resolve
+                  : (RCTPromiseResolveBlock)resolve reject
+                  : (RCTPromiseRejectBlock)reject)
+{
+  NSString *path = AppFilePath(rel);
+  NSData *data = [[NSData alloc] initWithBase64EncodedString:base64 options:0];
+  if (!path || !data) {
+    reject(@"WRITE", @"Couldn't save the file.", nil);
+    return;
+  }
+  NSError *error = nil;
+  [[NSFileManager defaultManager] createDirectoryAtPath:path.stringByDeletingLastPathComponent
+                            withIntermediateDirectories:YES
+                                             attributes:nil
+                                                  error:nil];
+  if (![data writeToFile:path options:NSDataWritingAtomic | NSDataWritingFileProtectionComplete error:&error]) {
+    reject(@"WRITE", error.localizedDescription ?: @"Couldn't save the file.", error);
+    return;
+  }
+  resolve(path);
+}
+
+RCT_EXPORT_METHOD(readAppFile
+                  : (NSString *)rel resolve
+                  : (RCTPromiseResolveBlock)resolve reject
+                  : (RCTPromiseRejectBlock)reject)
+{
+  NSString *path = AppFilePath(rel);
+  NSData *data = path ? [NSData dataWithContentsOfFile:path] : nil;
+  resolve(data ? [data base64EncodedStringWithOptions:0] : [NSNull null]);
+}
+
+RCT_EXPORT_METHOD(deleteAppFile
+                  : (NSString *)rel resolve
+                  : (RCTPromiseResolveBlock)resolve reject
+                  : (RCTPromiseRejectBlock)reject)
+{
+  NSString *path = AppFilePath(rel);
+  if (path) [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
+  resolve(nil);
+}
+
 - (void)presentPickerFor:(NSArray<UTType *> *)types
                  resolve:(RCTPromiseResolveBlock)resolve
                   reject:(RCTPromiseRejectBlock)reject
@@ -255,6 +310,62 @@ RCT_EXPORT_METHOD(extractOcrText
       }
     }
     resolve(text);
+  });
+}
+
+/** Opens a PDF (unlocking it if needed) for the page-by-page reading below. */
+static PDFDocument *OpenPdf(NSString *path, NSString *password, NSString **error)
+{
+  PDFDocument *doc = [[PDFDocument alloc] initWithURL:[NSURL fileURLWithPath:path]];
+  if (doc == nil) {
+    *error = @"Couldn't open this PDF.";
+    return nil;
+  }
+  if (doc.isLocked && (password.length == 0 || ![doc unlockWithPassword:password])) {
+    *error = @"This PDF needs a password.";
+    return nil;
+  }
+  return doc;
+}
+
+RCT_EXPORT_METHOD(pageCount
+                  : (NSString *)path password
+                  : (NSString *)password resolve
+                  : (RCTPromiseResolveBlock)resolve reject
+                  : (RCTPromiseRejectBlock)reject)
+{
+  NSString *error = nil;
+  PDFDocument *doc = OpenPdf(path, password, &error);
+  if (!doc) {
+    reject(@"READ", error, nil);
+    return;
+  }
+  resolve(@(doc.pageCount));
+}
+
+/** One page read with OCR, so the app can show "Reading page 3 of 13". */
+RCT_EXPORT_METHOD(extractOcrPage
+                  : (NSString *)path password
+                  : (NSString *)password page
+                  : (double)index resolve
+                  : (RCTPromiseResolveBlock)resolve reject
+                  : (RCTPromiseRejectBlock)reject)
+{
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    NSString *error = nil;
+    PDFDocument *doc = OpenPdf(path, password, &error);
+    if (!doc) {
+      reject(@"READ", error, nil);
+      return;
+    }
+    NSInteger i = (NSInteger)index;
+    if (i < 0 || i >= doc.pageCount) {
+      resolve(@"");
+      return;
+    }
+    @autoreleasepool {
+      resolve(StatementOcrPage([doc pageAtIndex:i]));
+    }
   });
 }
 

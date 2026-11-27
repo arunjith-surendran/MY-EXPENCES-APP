@@ -25,7 +25,7 @@ import type { RootStackParamList } from '../../App';
 import Gradient from '../components/Gradient';
 import { useUndo } from '../components/UndoToast';
 import { checkBudgetAlerts } from '../lib/budgets';
-import { getReceipt, removeReceipt, setReceipt } from '../lib/receipts';
+import { getReceiptUri, removeReceipt, setReceipt } from '../lib/receipts';
 import { addRecurring } from '../lib/recurring';
 import {
   deleteExpense,
@@ -97,7 +97,9 @@ export default function AddScreen({ navigation, route }: Props) {
   const [note, setNote] = useState('');
   const { showUndo } = useUndo();
   // Receipt photo (JPEG base64); `receiptChanged` says whether to save or remove it.
+  // What the receipt <Image> shows (a file or data URI), and a newly picked photo to save.
   const [receipt, setReceiptData] = useState<string | null>(null);
+  const [pendingReceipt, setPendingReceipt] = useState<string | null>(null);
   const [receiptChanged, setReceiptChanged] = useState(false);
   const [viewReceipt, setViewReceipt] = useState(false);
   // Extra parts of a split payment; the rest of the amount stays in `category`.
@@ -166,7 +168,7 @@ export default function AddScreen({ navigation, route }: Props) {
           .catch(() => {});
       }
     });
-    getReceipt(editId)
+    getReceiptUri(editId)
       .then(setReceiptData)
       .catch(() => {});
   }, [editId]);
@@ -309,7 +311,8 @@ export default function AddScreen({ navigation, route }: Props) {
       }
       const data = r.assets?.[0]?.base64;
       if (data) {
-        setReceiptData(data);
+        setReceiptData(`data:image/jpeg;base64,${data}`);
+        setPendingReceipt(data);
         setReceiptChanged(true);
       }
     };
@@ -336,6 +339,7 @@ export default function AddScreen({ navigation, route }: Props) {
 
   const dropReceipt = () => {
     setReceiptData(null);
+    setPendingReceipt(null);
     setReceiptChanged(true);
   };
 
@@ -432,7 +436,7 @@ export default function AddScreen({ navigation, route }: Props) {
         }
       }
       if (id && receiptChanged) {
-        if (receipt) await setReceipt(id, receipt);
+        if (pendingReceipt) await setReceipt(id, pendingReceipt);
         else await removeReceipt(id);
       }
       checkBudgetAlerts();
@@ -740,7 +744,7 @@ export default function AddScreen({ navigation, route }: Props) {
           <View style={styles.receiptRow}>
             <Pressable onPress={() => setViewReceipt(true)}>
               <Image
-                source={{ uri: `data:image/jpeg;base64,${receipt}` }}
+                source={{ uri: receipt }}
                 style={[styles.receiptThumb, { borderColor: t.border }]}
               />
             </Pressable>
@@ -948,7 +952,7 @@ export default function AddScreen({ navigation, route }: Props) {
         <Pressable style={styles.viewer} onPress={() => setViewReceipt(false)}>
           {receipt && (
             <Image
-              source={{ uri: `data:image/jpeg;base64,${receipt}` }}
+              source={{ uri: receipt }}
               style={styles.viewerImage}
               resizeMode="contain"
             />

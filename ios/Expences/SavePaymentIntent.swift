@@ -367,10 +367,11 @@ enum PaymentNotice {
     let start = cal.date(from: cal.dateComponents([.year, .month], from: Date())) ?? Date()
     var total = 0.0
     var sum: OpaquePointer?
-    // Foreign-currency payments count with their AED value (aed_amount, filled in by the app);
+    // Spending only (not transfers or cash withdrawals). Foreign-currency payments count with
+    // their AED value (aed_amount, filled in by the app);
     // a database from before that column existed falls back to AED only.
     let converted =
-      "SELECT COALESCE(SUM(CASE WHEN currency = 'AED' THEN amount ELSE COALESCE(aed_amount, 0) END), 0) FROM expenses WHERE created_at >= ?"
+      "SELECT COALESCE(SUM(CASE WHEN currency = 'AED' THEN amount ELSE COALESCE(aed_amount, 0) END), 0) FROM expenses WHERE created_at >= ? AND category NOT IN ('Transfers', 'Cash withdrawal')"
     let aedOnly = "SELECT COALESCE(SUM(amount), 0) FROM expenses WHERE currency = 'AED' AND created_at >= ?"
     if sqlite3_prepare_v2(db, converted, -1, &sum, nil) == SQLITE_OK
       || sqlite3_prepare_v2(db, aedOnly, -1, &sum, nil) == SQLITE_OK

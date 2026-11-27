@@ -31,6 +31,7 @@ import DailyChart from '../components/DailyChart';
 import Gradient from '../components/Gradient';
 import { useUndo } from '../components/UndoToast';
 import { useDataChanged } from '../lib/dataEvents';
+import { deleteIncome, type Income, listIncome } from '../lib/income';
 import { listReceiptIds } from '../lib/receipts';
 import {
   aedOf,
@@ -44,7 +45,7 @@ import {
 } from '../lib/db';
 import { useConversion } from '../lib/currency';
 import { monthKey, monthLabel, monthRange, startOfToday } from '../lib/months';
-import { formatMoney } from '../lib/parse';
+import { formatMoney, isSpending } from '../lib/parse';
 import { useSubscription } from '../lib/subscription';
 import {
   cardShadow,
@@ -76,6 +77,9 @@ export default function MonthScreen({ route }: Props) {
   const isCurrentMonth = month === monthKey();
   const [items, setItems] = useState<Expense[]>([]);
   const [receiptIds, setReceiptIds] = useState<Set<number>>(new Set());
+  const [income, setIncome] = useState<Income[]>([]);
+  const [showAllIncome, setShowAllIncome] = useState(false);
+  const incomeTotal = income.reduce((s, i) => s + i.amount, 0);
   // Select mode (hold an expense, or "Select expenses" in the menu): ids ticked for deleting.
   const [selected, setSelected] = useState<Set<number> | null>(null);
   const [salary, setSalary] = useState<number | null>(null);
@@ -90,6 +94,9 @@ export default function MonthScreen({ route }: Props) {
       .catch(() => {});
     listReceiptIds()
       .then(setReceiptIds)
+      .catch(() => {});
+    listIncome(start, end)
+      .then(setIncome)
       .catch(() => {});
   }, [month]);
 
@@ -120,7 +127,7 @@ export default function MonthScreen({ route }: Props) {
     for (const e of items) {
       // Totals are in AED: other currencies count once their rate is known.
       const aed = aedOf(e);
-      if (aed == null) continue;
+      if (aed == null || !isSpending(e.category)) continue;
       monthSum += aed;
       if (e.method === 'cash') cashSum += aed;
       if (e.created_at >= today) todaySum += aed;
@@ -139,7 +146,7 @@ export default function MonthScreen({ route }: Props) {
     let biggest: Expense | null = null;
     for (const e of items) {
       const aed = aedOf(e);
-      if (aed == null) continue;
+      if (aed == null || !isSpending(e.category)) continue;
       const d = new Date(e.created_at).getDate();
       perDay.set(d, (perDay.get(d) ?? 0) + aed);
       if (!biggest || aed > (aedOf(biggest) ?? 0)) biggest = e;
@@ -184,7 +191,7 @@ export default function MonthScreen({ route }: Props) {
         out.push(s);
       }
       s.data.push(e);
-      s.total += aedOf(e) ?? 0;
+      if (isSpending(e.category)) s.total += aedOf(e) ?? 0;
     }
     return out;
   }, [items]);
@@ -406,8 +413,70 @@ export default function MonthScreen({ route }: Props) {
                   value={formatMoney(cashTotal)}
                   color={t.cash}
                 />
+                {incomeTotal > 0 && (
+                  <Stat
+                    label="Money in"
+                    value={formatMoney(incomeTotal)}
+                    color={t.success}
+                  />
+                )}
               </View>
             </View>
+
+            {income.length > 0 && (
+              <View
+                style={[
+                  styles.incomeCard,
+                  { backgroundColor: t.card, borderColor: t.border },
+                ]}
+              >
+                <Text style={[styles.incomeTitle, { color: t.muted }]}>
+                  Money in · not counted as spending
+                </Text>
+                {income.slice(0, showAllIncome ? undefined : 4).map(i => (
+                  <Pressable
+                    key={i.id}
+                    onLongPress={() =>
+                      Alert.alert(
+                        'Remove this?',
+                        `${i.source} · ${formatMoney(i.amount)}`,
+                        [
+                          { text: 'Cancel', style: 'cancel' },
+                          {
+                            text: 'Remove',
+                            style: 'destructive',
+                            onPress: () => deleteIncome(i.id).then(load),
+                          },
+                        ],
+                      )
+                    }
+                    style={styles.incomeRow}
+                  >
+                    <Text
+                      numberOfLines={1}
+                      style={[styles.flex, { color: t.text }]}
+                    >
+                      {i.source}
+                    </Text>
+                    <Text style={[styles.incomeAmount, { color: t.success }]}>
+                      +{formatMoney(i.amount)}
+                    </Text>
+                  </Pressable>
+                ))}
+                {income.length > 4 && (
+                  <Pressable
+                    onPress={() => setShowAllIncome(v => !v)}
+                    hitSlop={8}
+                  >
+                    <Text style={[styles.incomeMore, { color: t.accent }]}>
+                      {showAllIncome
+                        ? 'Show less'
+                        : `Show all ${income.length}`}
+                    </Text>
+                  </Pressable>
+                )}
+              </View>
+            )}
 
             <BudgetCard
               month={month}
@@ -631,6 +700,7 @@ export default function MonthScreen({ route }: Props) {
                   {' · '}
                   {e.category}
                   {e.card ? ` · ${e.card}` : ''}
+                  {isSpending(e.category) ? '' : ' · not counted in spending'}
                 </Text>
               </View>
               <View style={styles.amountCol}>
@@ -854,6 +924,22 @@ const styles = StyleSheet.create({
   },
   fabText: { fontWeight: '800', fontSize: 17 },
   headerBtn: { fontSize: 16, fontWeight: '600' },
+  incomeCard: {
+    marginTop: 12,
+    padding: 14,
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    gap: 8,
+  },
+  incomeTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+  },
+  incomeRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  incomeAmount: { fontWeight: '800' },
+  incomeMore: { fontWeight: '700', marginTop: 2 },
   headerRow: { flexDirection: 'row', alignItems: 'center', gap: 18 },
   itemTicked: { borderWidth: 1.5 },
   check: {

@@ -23,13 +23,12 @@ import {
   summarize,
   unlockBackup,
 } from '../lib/backup';
+import { LAST_BACKUP_KEY } from '../lib/backupReminder';
 import { emitDataChanged } from '../lib/dataEvents';
 import { getMeta, setMeta } from '../lib/db';
 import { runUpkeep } from '../lib/upkeep';
 import { useTheme } from '../lib/theme';
 import { useTrackFeature } from '../lib/usage';
-
-const LAST_BACKUP_KEY = 'last_backup_at';
 
 const when = (iso: string) =>
   new Date(iso).toLocaleString('en-AE', {

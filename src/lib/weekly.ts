@@ -1,6 +1,6 @@
 import { aedOf, getMeta, listExpenses, setMeta } from './db';
 import { notifyNow } from './notifications';
-import { formatMoney } from './parse';
+import { formatMoney, isSpending } from './parse';
 
 const SENT_KEY = 'weekly_summary_for';
 const DAY = 86_400_000;
@@ -66,7 +66,9 @@ export async function sendWeeklySummary(now = new Date()) {
     if ((await getMeta(SENT_KEY)) === key) return;
     await setMeta(SENT_KEY, key);
     const start = thisWeek.getTime() - 7 * DAY;
-    const items = await listExpenses(start - 28 * DAY, thisWeek.getTime());
+    const items = (
+      await listExpenses(start - 28 * DAY, thisWeek.getTime())
+    ).filter(e => isSpending(e.category));
     const last = items
       .filter(e => e.created_at >= start)
       .map(e => ({ category: e.category, aed: aedOf(e) ?? 0 }));

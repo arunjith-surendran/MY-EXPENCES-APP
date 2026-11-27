@@ -1,5 +1,6 @@
 import { getMeta, setMeta, wipeAllData } from './db';
 import { cancelNotification } from './notifications';
+import { listReceiptIds, removeReceipt } from './receipts';
 import { listRecurring } from './recurring';
 
 /**
@@ -29,6 +30,10 @@ export async function setOwner(owner: Owner) {
 export async function wipeEverything() {
   const reminders = await listRecurring().catch(() => []);
   for (const r of reminders) await cancelNotification(`recurring-${r.id}`);
+  // Receipt photo files first, while the table still says which they are.
+  for (const id of await listReceiptIds().catch(() => new Set<number>())) {
+    await removeReceipt(id).catch(() => {});
+  }
   await wipeAllData();
 }
 

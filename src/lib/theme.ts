@@ -53,6 +53,9 @@ const light = {
     Shopping: '#D12E6E',
     Entertainment: '#8E4FD6',
     Health: '#D93B40',
+    'Personal care': '#C2368F',
+    Transfers: '#64748B',
+    'Cash withdrawal': '#0F7B55',
     Other: '#8E8E93',
   } as Record<string, string>,
   // Categories the user adds take one of these, picked from the name so it stays the same.
@@ -104,6 +107,9 @@ const dark: typeof light = {
     Shopping: '#E0367A',
     Entertainment: '#A06AE8',
     Health: '#E5484D',
+    'Personal care': '#DB5AAE',
+    Transfers: '#8A9BB4',
+    'Cash withdrawal': '#16A06C',
     Other: '#8E8E93',
   },
   customCategories: [
@@ -216,6 +222,9 @@ const ICONS: Record<string, string> = {
   Shopping: 'SH',
   Health: 'HE',
   Entertainment: 'EN',
+  'Personal care': 'PC',
+  Transfers: 'TF',
+  'Cash withdrawal': 'CW',
   Other: 'OT',
 };
 
