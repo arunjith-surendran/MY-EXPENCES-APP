@@ -21,6 +21,9 @@ Setup steps are inside the app (Home → "Set up auto-logging for Apple Pay taps
 - Automatic categories for common UAE merchants (Carrefour, ENOC, Careem, DEWA, Talabat…)
 - Month-by-month view with totals per category, plus a monthly history screen
 - Add, edit and delete expenses manually (tap to edit, long-press to delete)
+- Cash payments: add them from the dashboard's "Paid in cash?" button (or pick Card / Cash when adding); card and cash totals are shown separately
+- Spending health: savings rate and a verdict (great saver → overspending) from your salary or your usual month, plus a lifestyle chart (essentials vs lifestyle vs other) per month
+- Months start from your first expense, so empty months from before you started aren't listed
 - Export a month as CSV (••• menu)
 - Clear one month or all history (••• menu)
 - All data stays on the phone (SQLite, no account, no server)

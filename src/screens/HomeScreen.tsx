@@ -22,7 +22,9 @@ import Svg, { Circle, Path, Rect } from 'react-native-svg';
 
 import type { TabProps } from '../../App';
 import BudgetCard from '../components/BudgetCard';
-import MonthlyChart from '../components/MonthlyChart';
+import Gradient from '../components/Gradient';
+import HealthCard from '../components/HealthCard';
+import LifestyleChart from '../components/LifestyleChart';
 import ProLock from '../components/ProLock';
 import {
   clearExpenses,
@@ -31,24 +33,46 @@ import {
   getSalaryInfo,
   listAutoLogCards,
   listExpenses,
+  listMonthCategoryTotals,
   listMonthSummaries,
+  type MonthCategoryTotal,
   type MonthSummary,
   salaryFor,
   type SalaryInfo,
   toCsv,
 } from '../lib/db';
 import { monthKey, monthLabel, shiftMonth, startOfToday } from '../lib/months';
+import {
+  activeMonths,
+  assessMonth,
+  groupByMonth,
+  type GroupTotals,
+} from '../lib/insights';
+import { useConversion } from '../lib/currency';
+import {
+  askPermissionOnce,
+  syncTeamNotifications,
+  type TeamNotification,
+} from '../lib/notifications';
 import { formatMoney } from '../lib/parse';
 import { useAuth } from '../lib/auth/AuthContext';
 import { timeLeft, useCurrentOffer, useNow } from '../lib/growth';
 import { useSalaryPrivacy } from '../lib/salaryPrivacy';
 import { useSubscription } from '../lib/subscription';
-import { glow, type ThemeMode, useTheme, useThemeMode } from '../lib/theme';
+import {
+  cardShadow,
+  glow,
+  type ThemeMode,
+  useTheme,
+  useThemeMode,
+} from '../lib/theme';
 import { SEEN_KEY } from './SupportScreen';
 
 type Props = TabProps<'Home'>;
 
 const DAY_MS = 86_400_000;
+const CHART_MONTHS = 12;
+const NO_GROUPS: GroupTotals = { essentials: 0, lifestyle: 0, other: 0 };
 
 const shortMonth = (key: string) => {
   const [y, m] = key.split('-').map(Number);
@@ -65,11 +89,16 @@ export default function HomeScreen({ navigation }: Props) {
   const { money } = useSalaryPrivacy();
   const { plan, hasPro, trialDaysLeft } = useSubscription();
   const { authedRequest } = useAuth();
+  const { convert } = useConversion();
   // A reply from the Expences team that the chat hasn't shown yet.
   const [newReply, setNewReply] = useState(false);
+  const [unread, setUnread] = useState(0);
   const offer = useCurrentOffer();
   const now = useNow(60_000);
   const [summaries, setSummaries] = useState<MonthSummary[]>([]);
+  const [categoryTotals, setCategoryTotals] = useState<MonthCategoryTotal[]>(
+    [],
+  );
   const [todayTotal, setTodayTotal] = useState(0);
   const [autoLogOn, setAutoLogOn] = useState(false);
   const [cards, setCards] = useState<string[]>([]);
@@ -79,6 +108,9 @@ export default function HomeScreen({ navigation }: Props) {
     listMonthSummaries()
       .then(setSummaries)
       .catch(err => Alert.alert('Could not load expenses', String(err)));
+    listMonthCategoryTotals()
+      .then(setCategoryTotals)
+      .catch(() => {});
     const today = startOfToday();
     listExpenses(today, today + DAY_MS)
       .then(rows =>
@@ -109,7 +141,16 @@ export default function HomeScreen({ navigation }: Props) {
         ),
       )
       .catch(() => {});
+    // Team messages: new ones become notifications, the bell shows the unread count.
+    authedRequest<{ notifications: TeamNotification[] }>('/notifications')
+      .then(({ notifications }) => syncTeamNotifications(notifications))
+      .then(setUnread)
+      .catch(() => {});
   }, [authedRequest]);
+
+  useEffect(() => {
+    askPermissionOnce().catch(() => {});
+  }, []);
 
   // Reload whenever the screen regains focus (e.g. after an auto-logged tap).
   useFocusEffect(load);
@@ -132,6 +173,7 @@ export default function HomeScreen({ navigation }: Props) {
     const thisMonth = byKey.get(current) ?? {
       month: current,
       total: 0,
+      cash: 0,
       count: 0,
     };
     const lastMonth = byKey.get(shiftMonth(current, -1));
@@ -145,14 +187,15 @@ export default function HomeScreen({ navigation }: Props) {
       lastMonth && lastMonth.total > 0
         ? ((thisMonth.total - lastMonth.total) / lastMonth.total) * 100
         : null;
-    // Always list the last 6 months (even empty ones), plus any older month with expenses.
-    const recent = Array.from({ length: 6 }, (_, i) => shiftMonth(current, -i));
-    const months = [
-      ...recent.map(
-        key => byKey.get(key) ?? { month: key, total: 0, count: 0 },
-      ),
-      ...summaries.filter(s => !recent.includes(s.month)),
-    ];
+    // Every month from the user's first expense to now, newest first; nothing before they started.
+    const active = activeMonths(
+      summaries.map(s => s.month),
+      current,
+    );
+    const months = active.map(
+      key => byKey.get(key) ?? { month: key, total: 0, cash: 0, count: 0 },
+    );
+    const earlier = summaries.filter(s => s.month < current);
     return {
       thisMonth,
       lastMonth,
@@ -161,10 +204,32 @@ export default function HomeScreen({ navigation }: Props) {
       top,
       change,
       monthlyAvg: summaries.length ? allTotal / summaries.length : 0,
+      earlierAvg: earlier.length
+        ? earlier.reduce((sum, s) => sum + s.total, 0) / earlier.length
+        : null,
       months,
+      chartMonths: active.slice(0, CHART_MONTHS).reverse(),
       maxMonth: Math.max(1, ...summaries.map(s => s.total)),
     };
   }, [summaries, current]);
+
+  const groups = useMemo(() => groupByMonth(categoryTotals), [categoryTotals]);
+  const health = useMemo(() => {
+    const today = new Date();
+    return assessMonth({
+      spent: stats.thisMonth.total,
+      groups: groups.get(current) ?? NO_GROUPS,
+      salary: salaryOf(current),
+      averageMonth: stats.earlierAvg,
+      daysElapsed: today.getDate(),
+      daysInMonth: new Date(
+        today.getFullYear(),
+        today.getMonth() + 1,
+        0,
+      ).getDate(),
+      format: n => formatMoney(n),
+    });
+  }, [stats, groups, current, salaryOf]);
 
   const openMonth = useCallback(
     (month: string) => navigation.navigate('Month', { month }),
@@ -261,6 +326,33 @@ export default function HomeScreen({ navigation }: Props) {
       headerRight: () => (
         <View style={styles.headerButtons}>
           <Pressable
+            onPress={() => navigation.navigate('Notifications')}
+            hitSlop={10}
+            accessibilityLabel={
+              unread > 0 ? `Notifications, ${unread} unread` : 'Notifications'
+            }
+            style={[styles.botButton, { backgroundColor: t.accentSoft }]}
+          >
+            {unread > 0 && (
+              <View
+                style={[
+                  styles.dot,
+                  { backgroundColor: t.danger, borderColor: t.bg },
+                ]}
+              />
+            )}
+            <Svg width={20} height={20} viewBox="0 0 24 24">
+              <Path
+                d="M6 10a6 6 0 0 1 12 0c0 5 2 6.5 2 6.5H4S6 15 6 10zM10 20a2 2 0 0 0 4 0"
+                stroke={t.accent}
+                strokeWidth={2}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                fill="none"
+              />
+            </Svg>
+          </Pressable>
+          <Pressable
             onPress={() => navigation.navigate('Support')}
             hitSlop={10}
             accessibilityLabel={
@@ -316,7 +408,16 @@ export default function HomeScreen({ navigation }: Props) {
         </View>
       ),
     });
-  }, [navigation, openMenu, newReply, t.accent, t.accentSoft, t.danger, t.bg]);
+  }, [
+    navigation,
+    openMenu,
+    newReply,
+    unread,
+    t.accent,
+    t.accentSoft,
+    t.danger,
+    t.bg,
+  ]);
 
   const setupColor = autoLogOn ? t.success : t.accent;
   const up = stats.change != null && stats.change > 0;
@@ -392,16 +493,13 @@ export default function HomeScreen({ navigation }: Props) {
             )}
             <Pressable
               onPress={() => openMonth(current)}
-              style={[
-                styles.hero,
-                { backgroundColor: t.accent },
-                glow(t.accent, 18),
-              ]}
+              style={[styles.hero, glow(t.gradients.hero[1], 22)]}
               accessibilityRole="button"
               accessibilityLabel={`${monthLabel(current)}, ${formatMoney(
                 stats.thisMonth.total,
               )} spent. Open month`}
             >
+              <Gradient colors={t.gradients.hero} radius={HERO_RADIUS} />
               <View style={styles.row}>
                 <Text style={[styles.heroLabel, { color: t.onAccent }]}>
                   Spent in {monthLabel(current)}
@@ -413,21 +511,59 @@ export default function HomeScreen({ navigation }: Props) {
               <Text style={[styles.big, { color: t.onAccent }]}>
                 {formatMoney(stats.thisMonth.total)}
               </Text>
+              {convert(stats.thisMonth.total) && (
+                <Text style={[styles.converted, { color: t.onAccent }]}>
+                  {convert(stats.thisMonth.total)}
+                </Text>
+              )}
+              <Text style={[styles.heroSub, { color: t.onAccent }]}>
+                {stats.thisMonth.count} expense(s)
+                {stats.change != null &&
+                  `  ·  ${up ? '▲' : '▼'} ${Math.abs(
+                    Math.round(stats.change),
+                  )}% vs last month`}
+              </Text>
               <View style={styles.chipRow}>
                 <Stat label="Today" value={formatMoney(todayTotal)} />
-                <Stat label="Expenses" value={String(stats.thisMonth.count)} />
                 <Stat
-                  label="vs last month"
-                  value={
-                    stats.change == null
-                      ? '—'
-                      : `${up ? '▲' : '▼'} ${Math.abs(
-                          Math.round(stats.change),
-                        )}%`
-                  }
+                  label="Card"
+                  value={formatMoney(
+                    stats.thisMonth.total - stats.thisMonth.cash,
+                  )}
                 />
+                <Stat label="Cash" value={formatMoney(stats.thisMonth.cash)} />
               </View>
             </Pressable>
+
+            <Pressable
+              onPress={() => navigation.navigate('Add', { method: 'cash' })}
+              style={[styles.cashButton, glow(t.gradients.cash[1], 12)]}
+              accessibilityRole="button"
+              accessibilityLabel="Add a cash expense"
+            >
+              <Gradient colors={t.gradients.cash} radius={16} />
+              <View style={styles.cashIcon}>
+                <Text style={[styles.cashIconText, { color: t.onAccent }]}>
+                  +
+                </Text>
+              </View>
+              <View style={styles.flex}>
+                <Text style={[styles.cashTitle, { color: t.onAccent }]}>
+                  Paid in cash?
+                </Text>
+                <Text style={[styles.cashSub, { color: t.onAccent }]}>
+                  Add it here so your totals stay complete.
+                </Text>
+              </View>
+              <Text style={[styles.cashTitle, { color: t.onAccent }]}>›</Text>
+            </Pressable>
+
+            <HealthCard
+              health={health}
+              onAddSalary={() =>
+                navigation.navigate('Salary', { month: current })
+              }
+            />
 
             <BudgetCard
               month={current}
@@ -444,13 +580,15 @@ export default function HomeScreen({ navigation }: Props) {
                   style={[
                     styles.card,
                     { backgroundColor: t.card, borderColor: t.border },
+                    cardShadow(t),
                   ]}
                 >
                   <Text style={[styles.label, { color: t.muted }]}>
-                    Spending by month
+                    Your lifestyle, month by month
                   </Text>
-                  <MonthlyChart
-                    summaries={summaries}
+                  <LifestyleChart
+                    months={stats.chartMonths}
+                    groups={groups}
                     salaryOf={salaryOf}
                     onOpenMonth={openMonth}
                   />
@@ -548,15 +686,23 @@ export default function HomeScreen({ navigation }: Props) {
                   backgroundColor: t.card,
                   borderColor: isCurrent ? t.accent : t.border,
                 },
+                cardShadow(t),
               ]}
             >
               <View style={styles.row}>
                 <Text style={[styles.monthName, { color: t.text }]}>
                   {monthLabel(m.month)}
                 </Text>
-                <Text style={[styles.monthTotal, { color: t.text }]}>
-                  {formatMoney(m.total)}
-                </Text>
+                <View style={styles.totalCol}>
+                  <Text style={[styles.monthTotal, { color: t.text }]}>
+                    {formatMoney(m.total)}
+                  </Text>
+                  {convert(m.total) && (
+                    <Text style={[styles.convertedSmall, { color: t.muted }]}>
+                      {convert(m.total)}
+                    </Text>
+                  )}
+                </View>
               </View>
               <View style={[styles.track, { backgroundColor: t.cardHi }]}>
                 <View
@@ -576,6 +722,7 @@ export default function HomeScreen({ navigation }: Props) {
               <View style={styles.row}>
                 <Text style={[styles.meta, { color: t.muted }]}>
                   {m.count} expense(s)
+                  {m.cash > 0 && `  ·  ${formatMoney(m.cash)} cash`}
                   {hasPro && salaryOf(m.month) != null && (
                     <Text
                       style={{
@@ -620,6 +767,8 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
+const HERO_RADIUS = 24;
+
 function Tile({
   label,
   value,
@@ -634,7 +783,11 @@ function Tile({
   const t = useTheme();
   return (
     <View
-      style={[styles.tile, { backgroundColor: t.card, borderColor: t.border }]}
+      style={[
+        styles.tile,
+        { backgroundColor: t.card, borderColor: t.border },
+        cardShadow(t),
+      ]}
     >
       <Text style={[styles.tileLabel, { color: t.muted }]}>{label}</Text>
       <Text
@@ -675,7 +828,7 @@ const styles = StyleSheet.create({
   },
   trialText: { fontSize: 13, fontWeight: '800' },
   menu: { fontSize: 18, fontWeight: '800', letterSpacing: 1 },
-  headerButtons: { flexDirection: 'row', alignItems: 'center', gap: 16 },
+  headerButtons: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   dot: {
     position: 'absolute',
     top: -1,
@@ -693,8 +846,36 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  hero: { padding: 20, borderRadius: 20 },
+  hero: { padding: 20, borderRadius: HERO_RADIUS },
   heroLabel: { fontSize: 13, fontWeight: '600', opacity: 0.85 },
+  converted: {
+    fontSize: 17,
+    fontWeight: '700',
+    opacity: 0.92,
+    fontVariant: ['tabular-nums'],
+  },
+  totalCol: { alignItems: 'flex-end' },
+  convertedSmall: { fontSize: 12, fontWeight: '600', marginTop: 1 },
+  heroSub: { fontSize: 13, fontWeight: '600', opacity: 0.9, marginTop: 2 },
+  cashButton: {
+    marginTop: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    padding: 14,
+    borderRadius: 16,
+  },
+  cashIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.22)',
+  },
+  cashIconText: { fontSize: 22, fontWeight: '800', marginTop: -2 },
+  cashTitle: { fontSize: 16, fontWeight: '800' },
+  cashSub: { fontSize: 12, fontWeight: '600', opacity: 0.9, marginTop: 1 },
   card: {
     marginTop: 16,
     padding: 16,
@@ -721,7 +902,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     paddingHorizontal: 10,
     paddingVertical: 8,
-    backgroundColor: 'rgba(255,255,255,0.14)',
+    backgroundColor: 'rgba(255,255,255,0.16)',
   },
   chipLabel: { fontSize: 11, fontWeight: '500', opacity: 0.85 },
   chipValue: { fontSize: 15, fontWeight: '700', marginTop: 2 },

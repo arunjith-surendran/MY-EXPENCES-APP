@@ -43,6 +43,7 @@ export default function AdminOfferNewScreen({ navigation, route }: Props) {
     personal ? 'A special offer for you' : 'Limited-time offer',
   );
   const [message, setMessage] = useState('');
+  const [notify, setNotify] = useState(true);
   const [busy, setBusy] = useState(false);
 
   const create = async () => {
@@ -61,6 +62,7 @@ export default function AdminOfferNewScreen({ navigation, route }: Props) {
           audience,
           userId: personal ? route.params!.userId : undefined,
           durationHours: hours,
+          notify,
         },
       });
       navigation.goBack();
@@ -172,6 +174,20 @@ export default function AdminOfferNewScreen({ navigation, route }: Props) {
             {p.title}: {discounted(p.amount, discount)} instead of {p.price}
           </Text>
         ))}
+      </View>
+
+      <SectionTitle>Notification</SectionTitle>
+      <View style={styles.chips}>
+        <Chip
+          label="🔔 Notify them now"
+          on={notify}
+          onPress={() => setNotify(true)}
+        />
+        <Chip
+          label="Show quietly"
+          on={!notify}
+          onPress={() => setNotify(false)}
+        />
       </View>
 
       <View style={styles.mt20}>

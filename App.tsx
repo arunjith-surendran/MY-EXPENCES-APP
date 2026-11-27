@@ -31,11 +31,13 @@ import {
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { getMeta, migrateDbIfNeeded, setMeta } from './src/lib/db';
+import AppLock from './src/components/AppLock';
 import PrivacyIntro from './src/components/PrivacyIntro';
 import { withPro } from './src/components/ProLock';
 import Splash from './src/components/Splash';
 import TabBar from './src/components/TabBar';
 import { AuthProvider, useAuth } from './src/lib/auth/AuthContext';
+import { ConversionProvider } from './src/lib/currency';
 import { SalaryPrivacyProvider } from './src/lib/salaryPrivacy';
 import { useSyncProAccess } from './src/lib/subscription';
 import { ThemeProvider, useTheme } from './src/lib/theme';
@@ -44,14 +46,17 @@ import AdminChatScreen from './src/screens/admin/AdminChatScreen';
 import AdminFinanceScreen from './src/screens/admin/AdminFinanceScreen';
 import AdminHomeScreen from './src/screens/admin/AdminHomeScreen';
 import AdminInboxScreen from './src/screens/admin/AdminInboxScreen';
+import AdminNotifyScreen from './src/screens/admin/AdminNotifyScreen';
 import AdminOfferNewScreen from './src/screens/admin/AdminOfferNewScreen';
 import AdminOffersScreen from './src/screens/admin/AdminOffersScreen';
 import AdminUserScreen from './src/screens/admin/AdminUserScreen';
 import AdminUsersScreen from './src/screens/admin/AdminUsersScreen';
 import type { UserFilter } from './src/screens/admin/ui';
 import AddScreen from './src/screens/AddScreen';
+import CurrencyScreen from './src/screens/CurrencyScreen';
 import HomeScreen from './src/screens/HomeScreen';
 import MonthScreen from './src/screens/MonthScreen';
+import NotificationsScreen from './src/screens/NotificationsScreen';
 import ImportScreen from './src/screens/ImportScreen';
 import PaywallScreen from './src/screens/PaywallScreen';
 import SalaryScreen from './src/screens/SalaryScreen';
@@ -80,6 +85,8 @@ export type RootStackParamList = {
         raw?: string;
         via?: string;
         month?: string;
+        /** Preselects how it was paid, e.g. "cash" from the dashboard's cash button. */
+        method?: string;
       }
     | undefined;
   Month: { month: string };
@@ -87,6 +94,8 @@ export type RootStackParamList = {
   Import: { month?: string } | undefined;
   Paywall: undefined;
   Support: undefined;
+  Notifications: undefined;
+  Currency: undefined;
   // Admin side (only for accounts in the backend's ADMIN_EMAILS).
   AdminHome: undefined;
   AdminUsers: { filter?: UserFilter } | undefined;
@@ -100,6 +109,8 @@ export type RootStackParamList = {
       }
     | undefined;
   AdminInbox: undefined;
+  /** With a user: a message for only them. */
+  AdminNotify: { userId?: string; userName?: string } | undefined;
   AdminChat: { userId: string; name: string };
   AdminFinance: undefined;
   Welcome: undefined;
@@ -224,15 +235,18 @@ export default function App() {
     <ThemeProvider ready={state === 'ready'}>
       <AuthProvider>
         <SalaryPrivacyProvider>
-          <SafeAreaProvider>
-            <View style={styles.flex}>
-              <Main state={state} />
-              {showIntro && (
-                <PrivacyIntro onDone={finishIntro} paused={!splashDone} />
-              )}
-              {!splashDone && <AppSplash state={state} onDone={hideSplash} />}
-            </View>
-          </SafeAreaProvider>
+          <ConversionProvider ready={state === 'ready'}>
+            <SafeAreaProvider>
+              <View style={styles.flex}>
+                <Main state={state} />
+                <AppLock ready={state === 'ready'} />
+                {showIntro && (
+                  <PrivacyIntro onDone={finishIntro} paused={!splashDone} />
+                )}
+                {!splashDone && <AppSplash state={state} onDone={hideSplash} />}
+              </View>
+            </SafeAreaProvider>
+          </ConversionProvider>
         </SalaryPrivacyProvider>
       </AuthProvider>
     </ThemeProvider>
@@ -379,6 +393,16 @@ function Main({ state }: { state: 'loading' | 'ready' | Error }) {
                   component={SupportScreen}
                   options={{ title: 'Help & feedback' }}
                 />
+                <Stack.Screen
+                  name="Currency"
+                  component={CurrencyScreen}
+                  options={{ title: 'Show amounts in', presentation: 'modal' }}
+                />
+                <Stack.Screen
+                  name="Notifications"
+                  component={NotificationsScreen}
+                  options={{ title: 'Notifications' }}
+                />
                 {user?.isAdmin && (
                   <>
                     <Stack.Screen
@@ -410,6 +434,11 @@ function Main({ state }: { state: 'loading' | 'ready' | Error }) {
                       name="AdminInbox"
                       component={AdminInboxScreen}
                       options={{ title: 'Support inbox' }}
+                    />
+                    <Stack.Screen
+                      name="AdminNotify"
+                      component={AdminNotifyScreen}
+                      options={{ title: 'Send notification' }}
                     />
                     <Stack.Screen
                       name="AdminFinance"

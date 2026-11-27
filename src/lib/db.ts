@@ -2,6 +2,8 @@ import { open, type DB } from '@op-engineering/op-sqlite';
 
 import { shiftMonth } from './months';
 
+export type PaymentMethod = 'card' | 'cash';
+
 export type Expense = {
   id: number;
   amount: number;
@@ -10,22 +12,31 @@ export type Expense = {
   card: string | null;
   category: string;
   source: 'apple_pay' | 'manual' | 'statement';
+  /** How it was paid: card (Apple Pay, bank statement, or entered by hand) or cash. */
+  method: PaymentMethod;
   note: string | null;
   created_at: number; // unix ms
 };
 
-export type NewExpense = Omit<Expense, 'id' | 'created_at'> & {
+export type NewExpense = Omit<Expense, 'id' | 'created_at' | 'method'> & {
   created_at?: number;
+  method?: PaymentMethod;
 };
 
 export type ExpenseUpdate = Pick<
   Expense,
-  'amount' | 'merchant' | 'category' | 'note' | 'created_at'
+  'amount' | 'merchant' | 'category' | 'note' | 'created_at' | 'method'
 >;
 
-export type MonthSummary = { month: string; total: number; count: number };
+/** AED totals for one month; `cash` is the part paid in cash. */
+export type MonthSummary = {
+  month: string;
+  total: number;
+  cash: number;
+  count: number;
+};
 
-const DATABASE_VERSION = 3;
+const DATABASE_VERSION = 4;
 
 let db: DB | null = null;
 
@@ -67,13 +78,22 @@ export async function migrateDbIfNeeded() {
       'CREATE TABLE IF NOT EXISTS salary (month TEXT PRIMARY KEY, amount REAL NOT NULL)',
     );
   }
+  if (current < 4) {
+    await d.execute(
+      "ALTER TABLE expenses ADD COLUMN method TEXT NOT NULL DEFAULT 'card'",
+    );
+    // Manual entries saved without a merchant were named "Cash": they were cash payments.
+    await d.execute(
+      "UPDATE expenses SET method = 'cash' WHERE source = 'manual' AND merchant = 'Cash'",
+    );
+  }
   await d.execute(`PRAGMA user_version = ${DATABASE_VERSION}`);
 }
 
 export async function insertExpense(e: NewExpense): Promise<number> {
   const result = await getDb().execute(
-    `INSERT INTO expenses (amount, currency, merchant, card, category, source, note, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO expenses (amount, currency, merchant, card, category, source, method, note, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       e.amount,
       e.currency,
@@ -81,6 +101,7 @@ export async function insertExpense(e: NewExpense): Promise<number> {
       e.card,
       e.category,
       e.source,
+      e.method ?? 'card',
       e.note,
       e.created_at ?? Date.now(),
     ],
@@ -90,8 +111,8 @@ export async function insertExpense(e: NewExpense): Promise<number> {
 
 export async function updateExpense(id: number, e: ExpenseUpdate) {
   await getDb().execute(
-    'UPDATE expenses SET amount = ?, merchant = ?, category = ?, note = ?, created_at = ? WHERE id = ?',
-    [e.amount, e.merchant, e.category, e.note, e.created_at, id],
+    'UPDATE expenses SET amount = ?, merchant = ?, category = ?, note = ?, created_at = ?, method = ? WHERE id = ?',
+    [e.amount, e.merchant, e.category, e.note, e.created_at, e.method, id],
   );
 }
 
@@ -258,8 +279,8 @@ export async function insertExpenses(items: NewExpense[]): Promise<number> {
   await d.transaction(async tx => {
     for (const e of items) {
       await tx.execute(
-        `INSERT INTO expenses (amount, currency, merchant, card, category, source, note, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO expenses (amount, currency, merchant, card, category, source, method, note, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           e.amount,
           e.currency,
@@ -267,6 +288,7 @@ export async function insertExpenses(items: NewExpense[]): Promise<number> {
           e.card,
           e.category,
           e.source,
+          e.method ?? 'card',
           e.note,
           e.created_at ?? Date.now(),
         ],
@@ -330,13 +352,36 @@ export async function listMonthSummaries(): Promise<MonthSummary[]> {
   const { rows } = await getDb().execute(
     `SELECT strftime('%Y-%m', created_at / 1000, 'unixepoch', 'localtime') AS month,
             SUM(CASE WHEN currency = 'AED' THEN amount ELSE 0 END) AS total,
+            SUM(CASE WHEN currency = 'AED' AND method = 'cash' THEN amount ELSE 0 END) AS cash,
             COUNT(*) AS count
      FROM expenses GROUP BY month ORDER BY month DESC`,
   );
   return rows.map(r => ({
     month: String(r.month),
     total: Number(r.total ?? 0),
+    cash: Number(r.cash ?? 0),
     count: Number(r.count ?? 0),
+  }));
+}
+
+export type MonthCategoryTotal = {
+  month: string;
+  category: string;
+  total: number;
+};
+
+/** AED totals per month and category (local time). */
+export async function listMonthCategoryTotals(): Promise<MonthCategoryTotal[]> {
+  const { rows } = await getDb().execute(
+    `SELECT strftime('%Y-%m', created_at / 1000, 'unixepoch', 'localtime') AS month,
+            category, SUM(amount) AS total
+     FROM expenses WHERE currency = 'AED'
+     GROUP BY month, category`,
+  );
+  return rows.map(r => ({
+    month: String(r.month),
+    category: String(r.category),
+    total: Number(r.total ?? 0),
   }));
 }
 
@@ -363,7 +408,8 @@ export function toCsv(items: Expense[]): string {
     const s = v == null ? '' : String(v);
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
-  const header = 'Date,Merchant,Amount,Currency,Category,Card,Source,Note';
+  const header =
+    'Date,Merchant,Amount,Currency,Category,Paid with,Card,Source,Note';
   const lines = items.map(e =>
     [
       new Date(e.created_at).toISOString(),
@@ -371,6 +417,7 @@ export function toCsv(items: Expense[]): string {
       e.amount.toFixed(2),
       e.currency,
       e.category,
+      e.method,
       e.card,
       e.source,
       e.note,

@@ -4,7 +4,7 @@ import { monthKey } from '../lib/months';
 import { formatMoney } from '../lib/parse';
 import { useSalaryPrivacy } from '../lib/salaryPrivacy';
 import { useSubscription } from '../lib/subscription';
-import { glow, useTheme } from '../lib/theme';
+import { cardShadow, glow, useTheme } from '../lib/theme';
 import EyeToggle from './EyeToggle';
 import ProLock from './ProLock';
 
@@ -78,7 +78,11 @@ export default function BudgetCard({
 
   return (
     <View
-      style={[styles.card, { backgroundColor: t.card, borderColor: t.border }]}
+      style={[
+        styles.card,
+        { backgroundColor: t.card, borderColor: t.border },
+        cardShadow(t),
+      ]}
     >
       <View style={styles.row}>
         <View style={styles.title}>

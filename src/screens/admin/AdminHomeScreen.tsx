@@ -298,6 +298,12 @@ export default function AdminHomeScreen({ navigation }: Props) {
           onPress={() => navigation.navigate('AdminInbox')}
         />
         <Tile
+          icon="🔔"
+          label="Notify"
+          value="Send a message"
+          onPress={() => navigation.navigate('AdminNotify')}
+        />
+        <Tile
           icon="💰"
           label="Money"
           value="Costs & payments"

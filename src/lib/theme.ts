@@ -31,6 +31,19 @@ const light = {
   success: '#13804B',
   warning: '#B45309',
   danger: '#C81E1E',
+  cash: '#0F7B55', // cash payments (paired with a "Cash" label)
+  // Gradients run top-left → bottom-right. Text on them is always onAccent.
+  gradients: {
+    hero: ['#3D6EF5', '#1F4FD1', '#2B2E9C'],
+    cash: ['#16A06C', '#0F7B55'],
+    good: ['#1FA463', '#13804B'],
+    warn: ['#E08A1E', '#B45309'],
+    bad: ['#E5484D', '#B01A1A'],
+    surface: ['#FFFFFF', '#F3F6FC'],
+  } as Record<'hero' | 'cash' | 'good' | 'warn' | 'bad' | 'surface', string[]>,
+  shadowOpacity: 0.16,
+  // Chart series in fixed order (essentials, lifestyle, other); checked with the dataviz validator.
+  series: ['#2A78D6', '#EB6834', '#1BAF7A'],
   categories: {
     Groceries: '#25904A',
     'Food & Dining': '#D2620A',
@@ -60,6 +73,17 @@ const dark: typeof light = {
   success: '#2FBF71',
   warning: '#F0A732',
   danger: '#F05252',
+  cash: '#2FBF8A',
+  gradients: {
+    hero: ['#4D7CFE', '#2F56D8', '#3A2B9E'],
+    cash: ['#1FA673', '#117A55'],
+    good: ['#25A866', '#167A47'],
+    warn: ['#D98A1F', '#A35A0A'],
+    bad: ['#E5484D', '#A31919'],
+    surface: ['#172031', '#121926'],
+  },
+  shadowOpacity: 0.45,
+  series: ['#3987E5', '#D95926', '#199E70'],
   categories: {
     Groceries: '#30B05A',
     'Food & Dining': '#D9660A',
@@ -134,14 +158,25 @@ export function useThemeMode() {
   return { mode, setMode };
 }
 
-/** A soft, neutral card shadow (the color argument is kept for call-site compatibility). */
-export function glow(_color: string, _radius = 14): ViewStyle {
+/** A soft shadow tinted with `color`, so a blue button casts a faint blue glow below it. */
+export function glow(color: string, radius = 14): ViewStyle {
   return {
-    shadowColor: '#0B1324',
-    shadowOpacity: 0.06,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 2,
+    shadowColor: color,
+    shadowOpacity: 0.28,
+    shadowRadius: radius,
+    shadowOffset: { width: 0, height: Math.round(radius / 2.5) },
+    elevation: Math.min(Math.round(radius / 3), 8),
+  };
+}
+
+/** The resting shadow under cards: neutral in light mode, deeper in dark mode. */
+export function cardShadow(t: Theme): ViewStyle {
+  return {
+    shadowColor: t.scheme === 'dark' ? '#000000' : '#1B2A4A',
+    shadowOpacity: t.shadowOpacity,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 3,
   };
 }
 

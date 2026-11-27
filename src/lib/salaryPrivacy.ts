@@ -9,45 +9,12 @@ import {
   useState,
 } from 'react';
 import { AppState } from 'react-native';
-import * as Keychain from 'react-native-keychain';
 
+import { authenticate } from './biometrics';
 import { formatMoney } from './parse';
-
-const SERVICE = 'com.expences.app.salary-reveal';
 
 /** Shown in place of any salary-derived figure while hidden. */
 export const HIDDEN_AMOUNT = 'AED ••••••';
-
-/**
- * Asks for Face ID / Touch ID (or the device passcode as fallback). Reading a Keychain item
- * guarded by biometric access control is what triggers the system prompt; the item itself
- * holds nothing secret. Resolves false when the user cancels or authentication fails.
- */
-async function authenticate(): Promise<boolean> {
-  // No passcode set: the phone itself is unlocked to anyone, nothing to check against.
-  if (!(await Keychain.isPasscodeAuthAvailable().catch(() => false))) {
-    return true;
-  }
-  try {
-    if (!(await Keychain.hasGenericPassword({ service: SERVICE }))) {
-      await Keychain.setGenericPassword('salary', 'reveal', {
-        service: SERVICE,
-        accessControl: Keychain.ACCESS_CONTROL.BIOMETRY_ANY_OR_DEVICE_PASSCODE,
-        accessible: Keychain.ACCESSIBLE.WHEN_PASSCODE_SET_THIS_DEVICE_ONLY,
-      });
-    }
-    const entry = await Keychain.getGenericPassword({
-      service: SERVICE,
-      authenticationPrompt: {
-        title: 'Show salary',
-        cancel: 'Cancel',
-      },
-    });
-    return entry !== false;
-  } catch {
-    return false;
-  }
-}
 
 type SalaryPrivacy = {
   hidden: boolean;
@@ -81,7 +48,7 @@ export function SalaryPrivacyProvider({ children }: { children: ReactNode }) {
 
   const reveal = useCallback(async () => {
     if (!hidden) return true;
-    const ok = await authenticate();
+    const ok = await authenticate('Show salary');
     if (ok) setHidden(false);
     return ok;
   }, [hidden]);

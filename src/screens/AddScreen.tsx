@@ -13,12 +13,14 @@ import {
 } from 'react-native';
 
 import type { RootStackParamList } from '../../App';
+import Gradient from '../components/Gradient';
 import {
   deleteExpense,
   getExpense,
   insertExpense,
   isRecentDuplicate,
   markAutoLogWorking,
+  type PaymentMethod,
   updateExpense,
 } from '../lib/db';
 import {
@@ -66,6 +68,9 @@ export default function AddScreen({ navigation, route }: Props) {
     guessCategory(params.merchant ?? ''),
   );
   const [note, setNote] = useState('');
+  const [method, setMethod] = useState<PaymentMethod>(
+    params.method === 'cash' ? 'cash' : 'card',
+  );
   // When adding from a past month, start on that month's last day; otherwise today.
   const [date, setDate] = useState(() => {
     const now = new Date();
@@ -77,8 +82,14 @@ export default function AddScreen({ navigation, route }: Props) {
   });
 
   useEffect(() => {
-    navigation.setOptions({ title: editId ? 'Edit expense' : 'Add expense' });
-  }, [editId, navigation]);
+    navigation.setOptions({
+      title: editId
+        ? 'Edit expense'
+        : params.method === 'cash'
+        ? 'Add cash expense'
+        : 'Add expense',
+    });
+  }, [editId, navigation, params.method]);
 
   // Edit path: load the existing expense into the form.
   useEffect(() => {
@@ -96,6 +107,7 @@ export default function AddScreen({ navigation, route }: Props) {
           : 'Other',
       );
       setNote(e.note ?? '');
+      setMethod(e.method === 'cash' ? 'cash' : 'card');
       setDate(new Date(e.created_at));
     });
   }, [editId]);
@@ -184,10 +196,11 @@ export default function AddScreen({ navigation, route }: Props) {
     try {
       const fields = {
         amount: value,
-        merchant: merchant.trim() || 'Cash',
+        merchant: merchant.trim() || (method === 'cash' ? 'Cash' : 'Card'),
         category,
         note: note.trim() || null,
         created_at: date.getTime(),
+        method,
       };
       if (editId) {
         await updateExpense(editId, fields);
@@ -255,12 +268,53 @@ export default function AddScreen({ navigation, route }: Props) {
           autoFocus={!editId}
         />
 
-        <Text style={[styles.label, { color: t.muted }]}>Merchant</Text>
+        <Text style={[styles.label, { color: t.muted }]}>Paid with</Text>
+        <View style={[styles.segment, { backgroundColor: t.cardHi }]}>
+          {(
+            [
+              ['card', 'Card'],
+              ['cash', 'Cash'],
+            ] as const
+          ).map(([value, label]) => {
+            const active = method === value;
+            const colors =
+              value === 'cash' ? t.gradients.cash : t.gradients.hero;
+            return (
+              <Pressable
+                key={value}
+                onPress={() => setMethod(value)}
+                accessibilityRole="button"
+                accessibilityState={{ selected: active }}
+                style={[
+                  styles.segmentItem,
+                  active && glow(colors[colors.length - 1], 8),
+                ]}
+              >
+                {active && <Gradient colors={colors} radius={10} />}
+                <Text
+                  style={[
+                    styles.segmentText,
+                    { color: active ? t.onAccent : t.text },
+                  ]}
+                >
+                  {value === 'cash' ? '💵 ' : '💳 '}
+                  {label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+
+        <Text style={[styles.label, { color: t.muted }]}>
+          {method === 'cash' ? 'What for' : 'Merchant'}
+        </Text>
         <TextInput
           style={input}
           value={merchant}
           onChangeText={onMerchantChange}
-          placeholder="e.g. Carrefour"
+          placeholder={
+            method === 'cash' ? 'e.g. Grocery shop, taxi' : 'e.g. Carrefour'
+          }
           placeholderTextColor={t.muted}
           maxLength={80}
         />
@@ -374,11 +428,14 @@ export default function AddScreen({ navigation, route }: Props) {
           disabled={saving}
           style={[
             styles.button,
-            { backgroundColor: t.accent },
-            glow(t.accent),
+            glow((method === 'cash' ? t.gradients.cash : t.gradients.hero)[1]),
             saving && styles.dimmed,
           ]}
         >
+          <Gradient
+            colors={method === 'cash' ? t.gradients.cash : t.gradients.hero}
+            radius={14}
+          />
           <Text style={[styles.buttonText, { color: t.onAccent }]}>
             {editId ? 'Save changes' : 'Save'}
           </Text>
@@ -459,6 +516,14 @@ const styles = StyleSheet.create({
   },
   dateText: { fontSize: 16, fontWeight: '700' },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  segment: { flexDirection: 'row', borderRadius: 12, padding: 4, gap: 4 },
+  segmentItem: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  segmentText: { fontSize: 15, fontWeight: '700' },
   chip: {
     borderWidth: 1,
     borderRadius: 20,

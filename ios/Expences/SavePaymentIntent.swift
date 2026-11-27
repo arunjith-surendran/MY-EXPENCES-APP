@@ -1,6 +1,7 @@
 import AppIntents
 import Foundation
 import SQLite3
+import UserNotifications
 
 /// A single Shortcuts action ("Save Apple Pay Payment") for the Wallet automation.
 /// It writes the payment straight into the app's SQLite database in the background,
@@ -31,6 +32,7 @@ struct SavePaymentIntent: AppIntent {
     do {
       let status = try saveRun()
       RunLog.record(status: status, amount: amount, merchant: merchant, card: card, message: nil)
+      if status == "saved" { await PaymentNotice.post(amount: amount, merchant: merchant) }
     } catch {
       let message = (error as? PaymentError)?.text ?? String(describing: error)
       RunLog.record(status: "failed", amount: amount, merchant: merchant, card: card, message: message)
@@ -274,5 +276,71 @@ struct ExpencesShortcuts: AppShortcutsProvider {
       shortTitle: "Save Payment",
       systemImageName: "creditcard"
     )
+  }
+}
+
+/// "Saved AED 25.00 at Carrefour" as a notification after each auto-logged payment,
+/// with this month's total. Off when the user turned it off in Account (meta notify_payments = 0)
+/// or hasn't allowed notifications.
+@available(iOS 18.0, *)
+enum PaymentNotice {
+  static func post(amount raw: String, merchant: String?) async {
+    guard let value = PaymentParser.amount(raw) else { return }
+    let currency = PaymentParser.currency(raw)
+    let name = (merchant ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    let (enabled, monthTotal) = settings()
+    guard enabled else { return }
+
+    let center = UNUserNotificationCenter.current()
+    guard await center.notificationSettings().authorizationStatus == .authorized else { return }
+
+    let content = UNMutableNotificationContent()
+    content.title = "Saved \(money(value, currency))\(name.isEmpty ? "" : " at \(name)")"
+    content.body = "\(PaymentParser.category(name.isEmpty ? "Apple Pay" : name)) · This month: \(money(monthTotal, "AED"))"
+    content.sound = .default
+    content.threadIdentifier = "payments"
+    try? await center.add(
+      UNNotificationRequest(identifier: "payment-\(UUID().uuidString)", content: content, trigger: nil))
+  }
+
+  private static func money(_ n: Double, _ currency: String) -> String {
+    let f = NumberFormatter()
+    f.numberStyle = .decimal
+    f.minimumFractionDigits = 2
+    f.maximumFractionDigits = 2
+    f.locale = Locale(identifier: "en_AE")
+    return "\(currency) \(f.string(from: NSNumber(value: n)) ?? String(format: "%.2f", n))"
+  }
+
+  /// (notifications on, AED spent this calendar month) from the app's database.
+  private static func settings() -> (Bool, Double) {
+    let dir = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
+    var db: OpaquePointer?
+    guard sqlite3_open_v2(dir.appendingPathComponent("expenses.db").path, &db,
+                          SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
+      sqlite3_close(db)
+      return (true, 0)
+    }
+    defer { sqlite3_close(db) }
+    sqlite3_busy_timeout(db, 3000)
+
+    var enabled = true
+    var flag: OpaquePointer?
+    if sqlite3_prepare_v2(db, "SELECT value FROM meta WHERE key = 'notify_payments'", -1, &flag, nil) == SQLITE_OK,
+       sqlite3_step(flag) == SQLITE_ROW, let v = sqlite3_column_text(flag, 0) {
+      enabled = String(cString: v) != "0"
+    }
+    sqlite3_finalize(flag)
+
+    let cal = Calendar.current
+    let start = cal.date(from: cal.dateComponents([.year, .month], from: Date())) ?? Date()
+    var total = 0.0
+    var sum: OpaquePointer?
+    if sqlite3_prepare_v2(db, "SELECT COALESCE(SUM(amount), 0) FROM expenses WHERE currency = 'AED' AND created_at >= ?", -1, &sum, nil) == SQLITE_OK {
+      sqlite3_bind_int64(sum, 1, Int64(start.timeIntervalSince1970 * 1000))
+      if sqlite3_step(sum) == SQLITE_ROW { total = sqlite3_column_double(sum, 0) }
+    }
+    sqlite3_finalize(sum)
+    return (enabled, total)
   }
 }

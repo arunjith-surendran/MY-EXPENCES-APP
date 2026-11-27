@@ -8,15 +8,19 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   View,
 } from 'react-native';
 
 import type { RootStackParamList } from '../../App';
+import { useAppLockSetting } from '../components/AppLock';
 import Avatar from '../components/Avatar';
 import { config } from '../config';
 import { useAuth } from '../lib/auth/AuthContext';
+import { CURRENCY_NAMES, useConversion } from '../lib/currency';
 import { clearExpenses } from '../lib/db';
+import { usePaymentNotifications } from '../lib/notifications';
 import { useSubscription } from '../lib/subscription';
 import { type ThemeMode, useTheme, useThemeMode } from '../lib/theme';
 
@@ -38,6 +42,9 @@ export default function AccountScreen() {
   const { mode, setMode } = useThemeMode();
   const { user, signOut, deleteAccount } = useAuth();
   const { plan, trialDaysLeft } = useSubscription();
+  const lock = useAppLockSetting();
+  const { currency } = useConversion();
+  const paymentAlerts = usePaymentNotifications();
   const navigation =
     useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [busy, setBusy] = useState<'signOut' | 'delete' | null>(null);
@@ -163,6 +170,61 @@ export default function AccountScreen() {
         })}
       </View>
 
+      <Text style={[styles.section, { color: t.muted }]}>Currency</Text>
+      <View
+        style={[
+          styles.group,
+          { backgroundColor: t.card, borderColor: t.border },
+        ]}
+      >
+        <Row
+          label="Also show spending in"
+          value={
+            currency
+              ? [currency, CURRENCY_NAMES[currency]].filter(Boolean).join(' · ')
+              : 'Off'
+          }
+          onPress={() => navigation.navigate('Currency')}
+        />
+      </View>
+      <Text style={[styles.caption, { color: t.muted }]}>
+        E.g. pick INR to see what you spend in rupees. Live rates, updated
+        daily.
+      </Text>
+
+      <Text style={[styles.section, { color: t.muted }]}>
+        Security & notifications
+      </Text>
+      <View
+        style={[
+          styles.group,
+          { backgroundColor: t.card, borderColor: t.border },
+        ]}
+      >
+        <SwitchRow
+          label={`Unlock with ${lock.label}`}
+          value={lock.enabled}
+          disabled={!lock.available}
+          onChange={lock.set}
+        />
+        <SwitchRow
+          label="Notify me when a payment is saved"
+          value={paymentAlerts.enabled}
+          onChange={paymentAlerts.set}
+          divider
+        />
+        <Row
+          label="Notifications from Expences"
+          divider
+          onPress={() => navigation.navigate('Notifications')}
+        />
+      </View>
+      <Text style={[styles.caption, { color: t.muted }]}>
+        {lock.available
+          ? `You stay signed in for a month at a time. ${lock.label} keeps the app private when you open it.`
+          : 'Set a passcode on your iPhone to lock Expences with Face ID.'}
+      </Text>
+
       {user?.isAdmin && (
         <>
           <Text style={[styles.section, { color: t.muted }]}>Owner</Text>
@@ -285,6 +347,43 @@ export default function AccountScreen() {
   );
 }
 
+function SwitchRow({
+  label,
+  value,
+  disabled,
+  divider,
+  onChange,
+}: {
+  label: string;
+  value: boolean;
+  disabled?: boolean;
+  divider?: boolean;
+  onChange: (on: boolean) => void;
+}) {
+  const t = useTheme();
+  return (
+    <View
+      style={[
+        styles.row,
+        divider && {
+          borderTopWidth: StyleSheet.hairlineWidth,
+          borderTopColor: t.border,
+        },
+      ]}
+    >
+      <Text style={[styles.rowText, styles.flexShrink, { color: t.text }]}>
+        {label}
+      </Text>
+      <Switch
+        value={value}
+        disabled={disabled}
+        onValueChange={onChange}
+        trackColor={{ true: t.accent }}
+      />
+    </View>
+  );
+}
+
 function Row({
   label,
   value,
@@ -382,6 +481,7 @@ const styles = StyleSheet.create({
     minHeight: 50,
   },
   rowText: { fontSize: 16, fontWeight: '500' },
+  flexShrink: { flexShrink: 1, marginRight: 12 },
   rowEnd: { flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 1 },
   rowValue: { fontSize: 14, flexShrink: 1 },
   chevron: { fontSize: 22, fontWeight: '300' },

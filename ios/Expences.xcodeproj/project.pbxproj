@@ -10,6 +10,7 @@
 		0C80B921A6F3F58F76C31292 /* libPods-Expences.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 5DCACB8F33CDC322A6C60F78 /* libPods-Expences.a */; };
 		13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB51A68108700A75B9A /* Images.xcassets */; };
 		1A6135ADFAE0139D3DBCC00C /* StatementImporter.m in Sources */ = {isa = PBXBuildFile; fileRef = 860EC2437BDDF5A1CEFF0B17 /* StatementImporter.m */; };
+		5E7A1C2B9D4F6A8B3C1E0D01 /* LocalNotifications.m in Sources */ = {isa = PBXBuildFile; fileRef = 5E7A1C2B9D4F6A8B3C1E0D02 /* LocalNotifications.m */; };
 		1C1001A569A9E069D8D37F02 /* SavePaymentIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84F21CE114FD7EEAB0060C55 /* SavePaymentIntent.swift */; };
 		761780ED2CA45674006654EE /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 761780EC2CA45674006654EE /* AppDelegate.swift */; };
 		761780EF2CA45674006654EF /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 761780EE2CA45674006654EF /* SceneDelegate.swift */; };
@@ -30,6 +31,7 @@
 		81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = LaunchScreen.storyboard; path = Expences/LaunchScreen.storyboard; sourceTree = "<group>"; };
 		84F21CE114FD7EEAB0060C55 /* SavePaymentIntent.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SavePaymentIntent.swift; path = Expences/SavePaymentIntent.swift; sourceTree = "<group>"; };
 		860EC2437BDDF5A1CEFF0B17 /* StatementImporter.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; name = StatementImporter.m; path = Expences/StatementImporter.m; sourceTree = "<group>"; };
+		5E7A1C2B9D4F6A8B3C1E0D02 /* LocalNotifications.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; name = LocalNotifications.m; path = Expences/LocalNotifications.m; sourceTree = "<group>"; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
@@ -56,6 +58,7 @@
 				13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */,
 				84F21CE114FD7EEAB0060C55 /* SavePaymentIntent.swift */,
 				860EC2437BDDF5A1CEFF0B17 /* StatementImporter.m */,
+				5E7A1C2B9D4F6A8B3C1E0D02 /* LocalNotifications.m */,
 			);
 			name = Expences;
 			sourceTree = "<group>";
@@ -259,6 +262,7 @@
 				761780EF2CA45674006654EF /* SceneDelegate.swift in Sources */,
 				1C1001A569A9E069D8D37F02 /* SavePaymentIntent.swift in Sources */,
 				1A6135ADFAE0139D3DBCC00C /* StatementImporter.m in Sources */,
+				5E7A1C2B9D4F6A8B3C1E0D01 /* LocalNotifications.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -27,6 +27,7 @@ import type { RootStackParamList, TabProps } from '../../App';
 import BudgetCard from '../components/BudgetCard';
 import ProLock from '../components/ProLock';
 import DailyChart from '../components/DailyChart';
+import Gradient from '../components/Gradient';
 import {
   clearExpenses,
   deleteExpense,
@@ -36,10 +37,17 @@ import {
   listExpenses,
   toCsv,
 } from '../lib/db';
+import { useConversion } from '../lib/currency';
 import { monthKey, monthLabel, monthRange, startOfToday } from '../lib/months';
 import { formatMoney } from '../lib/parse';
 import { useSubscription } from '../lib/subscription';
-import { categoryStyle, glow, textGlow, useTheme } from '../lib/theme';
+import {
+  cardShadow,
+  categoryStyle,
+  glow,
+  textGlow,
+  useTheme,
+} from '../lib/theme';
 
 /** Opened for any month from the stack, or as the "Month" tab for the current month. */
 type Props =
@@ -56,6 +64,7 @@ export default function MonthScreen({ route }: Props) {
     useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const isTab = route.name === 'ThisMonth';
   const { hasPro } = useSubscription();
+  const { convert } = useConversion();
   const month = route.name === 'Month' ? route.params.month : monthKey();
   const isCurrentMonth = month === monthKey();
   const [items, setItems] = useState<Expense[]>([]);
@@ -82,20 +91,23 @@ export default function MonthScreen({ route }: Props) {
     return () => sub.remove();
   }, [load]);
 
-  const { monthTotal, todayTotal, byCategory } = useMemo(() => {
+  const { monthTotal, todayTotal, cashTotal, byCategory } = useMemo(() => {
     const today = startOfToday();
     let monthSum = 0;
     let todaySum = 0;
+    let cashSum = 0;
     const perCategory: Record<string, number> = {};
     for (const e of items) {
       if (e.currency !== 'AED') continue; // totals are AED-only
       monthSum += e.amount;
+      if (e.method === 'cash') cashSum += e.amount;
       if (e.created_at >= today) todaySum += e.amount;
       perCategory[e.category] = (perCategory[e.category] ?? 0) + e.amount;
     }
     return {
       monthTotal: monthSum,
       todayTotal: todaySum,
+      cashTotal: cashSum,
       byCategory: Object.entries(perCategory).sort((a, b) => b[1] - a[1]),
     };
   }, [items]);
@@ -252,18 +264,20 @@ export default function MonthScreen({ route }: Props) {
         ListHeaderComponent={
           <View>
             <View
-              style={[
-                styles.hero,
-                { backgroundColor: t.card, borderColor: t.border },
-                glow(t.accent, 18),
-              ]}
+              style={[styles.hero, { borderColor: t.border }, cardShadow(t)]}
             >
+              <Gradient colors={t.gradients.surface} radius={22} />
               <Text style={[styles.label, { color: t.accent }]}>
-                Total spent
+                Total spent · {items.length} expense(s)
               </Text>
               <Text style={[styles.big, { color: t.text }, textGlow(t.accent)]}>
                 {formatMoney(monthTotal)}
               </Text>
+              {convert(monthTotal) && (
+                <Text style={[styles.converted, { color: t.muted }]}>
+                  {convert(monthTotal)}
+                </Text>
+              )}
               <View style={styles.chipRow}>
                 {isCurrentMonth && (
                   <Stat
@@ -273,16 +287,14 @@ export default function MonthScreen({ route }: Props) {
                   />
                 )}
                 <Stat
-                  label="Expenses"
-                  value={String(items.length)}
-                  color={t.success}
+                  label="Card"
+                  value={formatMoney(monthTotal - cashTotal)}
+                  color={t.accent}
                 />
                 <Stat
-                  label="Avg / item"
-                  value={formatMoney(
-                    items.length ? monthTotal / items.length : 0,
-                  )}
-                  color={t.secondary}
+                  label="Cash"
+                  value={formatMoney(cashTotal)}
+                  color={t.cash}
                 />
               </View>
             </View>
@@ -317,6 +329,7 @@ export default function MonthScreen({ route }: Props) {
                   style={[
                     styles.card,
                     { backgroundColor: t.card, borderColor: t.border },
+                    cardShadow(t),
                   ]}
                 >
                   <Text style={[styles.label, { color: t.muted }]}>
@@ -353,6 +366,7 @@ export default function MonthScreen({ route }: Props) {
                     style={[
                       styles.card,
                       { backgroundColor: t.card, borderColor: t.border },
+                      cardShadow(t),
                     ]}
                   >
                     <Text style={[styles.label, { color: t.muted }]}>
@@ -449,6 +463,7 @@ export default function MonthScreen({ route }: Props) {
               style={[
                 styles.item,
                 { backgroundColor: t.card, borderColor: t.border },
+                cardShadow(t),
               ]}
             >
               <View
@@ -482,9 +497,21 @@ export default function MonthScreen({ route }: Props) {
                   {e.card ? ` · ${e.card}` : ''}
                 </Text>
               </View>
-              <Text style={[styles.amount, { color: t.text }]}>
-                {formatMoney(e.amount, e.currency)}
-              </Text>
+              <View style={styles.amountCol}>
+                <Text style={[styles.amount, { color: t.text }]}>
+                  {formatMoney(e.amount, e.currency)}
+                </Text>
+                {e.method === 'cash' && (
+                  <Text
+                    style={[
+                      styles.cashPill,
+                      { color: t.cash, borderColor: t.cash },
+                    ]}
+                  >
+                    Cash
+                  </Text>
+                )}
+              </View>
             </Pressable>
           );
         }}
@@ -494,13 +521,10 @@ export default function MonthScreen({ route }: Props) {
       {!isTab && (
         <Pressable
           onPress={() => navigation.navigate('Add', { month })}
-          style={[
-            styles.fab,
-            { backgroundColor: t.accent },
-            glow(t.accent, 20),
-          ]}
+          style={[styles.fab, glow(t.gradients.hero[1], 20)]}
           accessibilityLabel="Add expense"
         >
+          <Gradient colors={t.gradients.hero} radius={FAB_RADIUS} />
           <Text style={[styles.fabText, { color: t.onAccent }]}>+ Add</Text>
         </Pressable>
       )}
@@ -551,7 +575,11 @@ function Tile({
   const t = useTheme();
   return (
     <View
-      style={[styles.tile, { backgroundColor: t.card, borderColor: t.border }]}
+      style={[
+        styles.tile,
+        { backgroundColor: t.card, borderColor: t.border },
+        cardShadow(t),
+      ]}
     >
       <Text style={[styles.tileLabel, { color: t.muted }]}>{label}</Text>
       <Text
@@ -567,6 +595,8 @@ function Tile({
     </View>
   );
 }
+
+const FAB_RADIUS = 30;
 
 const styles = StyleSheet.create({
   flex: { flex: 1 },
@@ -654,13 +684,31 @@ const styles = StyleSheet.create({
   },
   iconText: { fontSize: 13, fontWeight: '800', letterSpacing: 0.5 },
   amount: { fontWeight: '800', fontSize: 15 },
+  converted: {
+    fontSize: 16,
+    fontWeight: '700',
+    marginTop: 2,
+    fontVariant: ['tabular-nums'],
+  },
+  amountCol: { alignItems: 'flex-end', gap: 4 },
+  cashPill: {
+    fontSize: 10,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    overflow: 'hidden',
+  },
   fab: {
     position: 'absolute',
     right: 20,
     bottom: 40,
     paddingHorizontal: 26,
     paddingVertical: 16,
-    borderRadius: 30,
+    borderRadius: FAB_RADIUS,
   },
   fabText: { fontWeight: '800', fontSize: 17 },
 });

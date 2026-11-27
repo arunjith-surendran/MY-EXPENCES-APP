@@ -271,6 +271,17 @@ export default function AdminUserScreen({ navigation, route }: Props) {
 
       <SectionTitle>Support</SectionTitle>
       <Button
+        label="Send a notification"
+        outline
+        onPress={() =>
+          navigation.navigate('AdminNotify', {
+            userId: user.id,
+            userName: name,
+          })
+        }
+      />
+      <View style={styles.mt10} />
+      <Button
         label="Open chat"
         outline
         onPress={() =>
