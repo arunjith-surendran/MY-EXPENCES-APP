@@ -1,12 +1,16 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import {
   addCustomCategory,
+  type CategoryGroup,
+  type CustomCategory,
   deleteCustomCategory,
   getMerchantCategory,
   listCustomCategories,
   listMerchantCategories,
   merchantKey,
+  renameCustomCategory,
+  setCategoryGroup,
   setMerchantCategory,
 } from './db';
 import { CATEGORIES, guessCategory } from './parse';
@@ -60,14 +64,22 @@ export async function rememberCategory(merchant: string, category: string) {
   await setMerchantCategory(merchant, category);
 }
 
+/** Checks a new or renamed category name; returns it tidied, or throws a readable error. */
+export function cleanCategoryName(raw: string): string {
+  const name = raw.trim().replace(/\s+/g, ' ');
+  if (!name) throw new Error('Type a name for the category.');
+  if (name.length > 24) throw new Error('Keep it to 24 characters.');
+  return name;
+}
+
 /** Built-in categories, then the user's own, with "Other" always last. */
 export function useCategories() {
-  const [custom, setCustom] = useState<string[]>([]);
+  const [customList, setCustomList] = useState<CustomCategory[]>([]);
 
   const reload = useCallback(
     () =>
       listCustomCategories()
-        .then(setCustom)
+        .then(setCustomList)
         .catch(() => {}),
     [],
   );
@@ -75,20 +87,47 @@ export function useCategories() {
     reload();
   }, [reload]);
 
+  const custom = useMemo(() => customList.map(c => c.name), [customList]);
+  const groups = useMemo(
+    () => new Map(customList.map(c => [c.name, c.group] as const)),
+    [customList],
+  );
+
   const add = useCallback(
-    async (raw: string): Promise<string> => {
-      const name = raw.trim().replace(/\s+/g, ' ');
-      if (!name) throw new Error('Type a name for the category.');
-      if (name.length > 24) throw new Error('Keep it to 24 characters.');
+    async (raw: string, group: CategoryGroup = 'other'): Promise<string> => {
+      const name = cleanCategoryName(raw);
       const existing = [...CATEGORIES, ...custom].find(
         c => c.toLowerCase() === name.toLowerCase(),
       );
       if (existing) return existing;
-      await addCustomCategory(name);
+      await addCustomCategory(name, group);
       await reload();
       return name;
     },
     [custom, reload],
+  );
+
+  const rename = useCallback(
+    async (from: string, raw: string): Promise<string> => {
+      const to = cleanCategoryName(raw);
+      if (to === from) return to;
+      const clash = [...CATEGORIES, ...custom].find(
+        c => c !== from && c.toLowerCase() === to.toLowerCase(),
+      );
+      if (clash) throw new Error(`"${clash}" already exists.`);
+      await renameCustomCategory(from, to);
+      await reload();
+      return to;
+    },
+    [custom, reload],
+  );
+
+  const setGroup = useCallback(
+    async (name: string, group: CategoryGroup) => {
+      await setCategoryGroup(name, group);
+      await reload();
+    },
+    [reload],
   );
 
   const remove = useCallback(
@@ -103,7 +142,12 @@ export function useCategories() {
   return {
     all: [...builtIn, ...custom, 'Other'] as string[],
     custom,
+    /** The group of each category the user added. */
+    groups,
     add,
+    rename,
+    setGroup,
     remove,
+    reload,
   };
 }

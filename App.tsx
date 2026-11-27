@@ -25,6 +25,7 @@ import {
 } from 'react';
 import {
   ActivityIndicator,
+  AppState,
   StatusBar,
   StyleSheet,
   Text,
@@ -38,12 +39,14 @@ import PrivacyIntro from './src/components/PrivacyIntro';
 import { withPro } from './src/components/ProLock';
 import Splash from './src/components/Splash';
 import TabBar, { BottomBar, type TabName } from './src/components/TabBar';
+import { UndoProvider } from './src/components/UndoToast';
 import UpdateGate from './src/components/UpdateGate';
 import { AuthProvider, useAuth } from './src/lib/auth/AuthContext';
 import { ConversionProvider } from './src/lib/currency';
 import { SalaryPrivacyProvider } from './src/lib/salaryPrivacy';
 import { useSyncProAccess } from './src/lib/subscription';
 import { ThemeProvider, useTheme } from './src/lib/theme';
+import { runUpkeep } from './src/lib/upkeep';
 import AccountScreen from './src/screens/AccountScreen';
 import AdminChatScreen from './src/screens/admin/AdminChatScreen';
 import AdminFinanceScreen from './src/screens/admin/AdminFinanceScreen';
@@ -57,6 +60,12 @@ import AdminUsersScreen from './src/screens/admin/AdminUsersScreen';
 import AdminVersionsScreen from './src/screens/admin/AdminVersionsScreen';
 import type { UserFilter } from './src/screens/admin/ui';
 import AddScreen from './src/screens/AddScreen';
+import BackupScreen from './src/screens/BackupScreen';
+import BudgetsScreen from './src/screens/BudgetsScreen';
+import CategoriesScreen from './src/screens/CategoriesScreen';
+import InsightsScreen from './src/screens/InsightsScreen';
+import RecurringScreen from './src/screens/RecurringScreen';
+import TrashScreen from './src/screens/TrashScreen';
 import CurrencyScreen from './src/screens/CurrencyScreen';
 import DeleteScreen from './src/screens/DeleteScreen';
 import SearchScreen from './src/screens/SearchScreen';
@@ -100,8 +109,14 @@ export type RootStackParamList = {
   Import: { month?: string } | undefined;
   /** Bulk delete; with a month, starts on that month. */
   Delete: { month?: string } | undefined;
-  /** Search and filter every expense; with a month, starts filtered to it. */
-  Search: { month?: string } | undefined;
+  /** Search and filter every expense; with a month (and category), starts filtered to it. */
+  Search: { month?: string; category?: string } | undefined;
+  Categories: undefined;
+  Budgets: undefined;
+  Recurring: undefined;
+  Trash: undefined;
+  Backup: undefined;
+  Insights: { month?: string } | undefined;
   Paywall: undefined;
   Support: undefined;
   Notifications: undefined;
@@ -161,7 +176,15 @@ const withBottomBar: StackLayout = ({ children, route, navigation }) =>
       <View style={styles.flex}>{children}</View>
       <StackBottomBar
         routeName={route.name}
-        onAdd={() => navigation.navigate('Add')}
+        // From a past month, a new expense starts on that month.
+        onAdd={() =>
+          navigation.navigate(
+            'Add',
+            route.name === 'Month'
+              ? { month: (route.params as { month: string }).month }
+              : undefined,
+          )
+        }
         onSelect={tab => navigation.navigate('Tabs', { screen: tab })}
       />
     </View>
@@ -288,11 +311,21 @@ export default function App() {
         const seen = await getMeta(PRIVACY_SEEN_KEY).catch(() => '1');
         setShowIntro(seen == null);
         setState('ready');
+        runUpkeep();
       })
       .catch(err =>
         setState(err instanceof Error ? err : new Error(String(err))),
       );
   }, []);
+
+  // Coming back to the app: add recurring payments that came due, convert currencies, etc.
+  useEffect(() => {
+    if (state !== 'ready') return;
+    const sub = AppState.addEventListener('change', s => {
+      if (s === 'active') runUpkeep();
+    });
+    return () => sub.remove();
+  }, [state]);
 
   const finishIntro = useCallback(() => {
     setShowIntro(false);
@@ -306,7 +339,9 @@ export default function App() {
           <ConversionProvider ready={state === 'ready'}>
             <SafeAreaProvider>
               <View style={styles.flex}>
-                <Main state={state} />
+                <UndoProvider>
+                  <Main state={state} />
+                </UndoProvider>
                 <AppLock ready={state === 'ready'} revealed={splashDone} />
                 {showIntro && (
                   <PrivacyIntro onDone={finishIntro} paused={!splashDone} />
@@ -457,6 +492,36 @@ function Main({ state }: { state: 'loading' | 'ready' | Error }) {
                   name="Search"
                   component={SearchScreen}
                   options={{ title: 'Search' }}
+                />
+                <Stack.Screen
+                  name="Categories"
+                  component={CategoriesScreen}
+                  options={{ title: 'Categories' }}
+                />
+                <Stack.Screen
+                  name="Budgets"
+                  component={BudgetsScreen}
+                  options={{ title: 'Budgets' }}
+                />
+                <Stack.Screen
+                  name="Recurring"
+                  component={RecurringScreen}
+                  options={{ title: 'Recurring payments' }}
+                />
+                <Stack.Screen
+                  name="Trash"
+                  component={TrashScreen}
+                  options={{ title: 'Recently deleted' }}
+                />
+                <Stack.Screen
+                  name="Backup"
+                  component={BackupScreen}
+                  options={{ title: 'Backup & restore' }}
+                />
+                <Stack.Screen
+                  name="Insights"
+                  component={InsightsScreen}
+                  options={{ title: 'Insights' }}
                 />
                 <Stack.Screen
                   name="Delete"

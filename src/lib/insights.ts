@@ -15,14 +15,18 @@ const GROUP_OF: Record<string, SpendGroup> = {
   Entertainment: 'lifestyle',
 };
 
-export const groupOf = (category: string): SpendGroup =>
-  GROUP_OF[category] ?? 'other';
+/** A category's group; `custom` holds the groups the user chose for their own categories. */
+export const groupOf = (
+  category: string,
+  custom?: ReadonlyMap<string, SpendGroup>,
+): SpendGroup => GROUP_OF[category] ?? custom?.get(category) ?? 'other';
 
 export type GroupTotals = Record<SpendGroup, number>;
 
 /** Per-month totals for each group, keyed by month ("2026-10"). */
 export function groupByMonth(
   rows: MonthCategoryTotal[],
+  custom?: ReadonlyMap<string, SpendGroup>,
 ): Map<string, GroupTotals> {
   const out = new Map<string, GroupTotals>();
   for (const r of rows) {
@@ -31,7 +35,7 @@ export function groupByMonth(
       g = { essentials: 0, lifestyle: 0, other: 0 };
       out.set(r.month, g);
     }
-    g[groupOf(r.category)] += r.total;
+    g[groupOf(r.category, custom)] += r.total;
   }
   return out;
 }
@@ -250,4 +254,54 @@ export function weekdayAverages(
     counts[w] += 1;
   }
   return sums.map((s, i) => (counts[i] ? s / counts[i] : 0));
+}
+
+export type CategoryChange = {
+  category: string;
+  now: number;
+  before: number;
+  /** now - before, in AED. */
+  change: number;
+  /** Relative change (0.32 = 32% more); null when there was nothing before. */
+  ratio: number | null;
+};
+
+/** AED per category this month against the month before, biggest change first. Pure. */
+export function compareCategories(
+  now: Map<string, number>,
+  before: Map<string, number>,
+): CategoryChange[] {
+  const names = new Set([...now.keys(), ...before.keys()]);
+  return [...names]
+    .map(category => {
+      const a = now.get(category) ?? 0;
+      const b = before.get(category) ?? 0;
+      return {
+        category,
+        now: a,
+        before: b,
+        change: a - b,
+        ratio: b > 0 ? (a - b) / b : null,
+      };
+    })
+    .filter(c => c.now > 0 || c.before > 0)
+    .sort((x, y) => Math.abs(y.change) - Math.abs(x.change));
+}
+
+export type MerchantTotal = { merchant: string; total: number; count: number };
+
+/** Where the money went, by merchant name (case-insensitive), top `n`. Pure. */
+export function topMerchants(
+  items: { merchant: string; aed: number }[],
+  n = 5,
+): MerchantTotal[] {
+  const map = new Map<string, MerchantTotal>();
+  for (const { merchant, aed } of items) {
+    const key = merchant.trim().toLowerCase();
+    const m = map.get(key) ?? { merchant: merchant.trim(), total: 0, count: 0 };
+    m.total += aed;
+    m.count += 1;
+    map.set(key, m);
+  }
+  return [...map.values()].sort((a, b) => b.total - a.total).slice(0, n);
 }

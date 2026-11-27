@@ -1,9 +1,11 @@
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useEffect, useMemo, useState } from 'react';
 import {
+  ActionSheetIOS,
   ActivityIndicator,
   Alert,
   NativeModules,
+  Platform,
   Pressable,
   SectionList,
   StyleSheet,
@@ -20,7 +22,12 @@ import {
   setSalary,
 } from '../lib/db';
 import { monthKey, monthLabel } from '../lib/months';
-import { categoryResolver, type CategoryResolver } from '../lib/categories';
+import {
+  categoryResolver,
+  type CategoryResolver,
+  rememberCategory,
+  useCategories,
+} from '../lib/categories';
 import { formatMoney, guessCategory } from '../lib/parse';
 import { isSalary, parseStatement, type StatementTxn } from '../lib/statement';
 import { categoryStyle, glow, useTheme } from '../lib/theme';
@@ -69,6 +76,32 @@ export default function ImportScreen({ navigation, route }: Props) {
   useEffect(() => {
     categoryResolver().then(resolve => setResolveCategory(() => resolve));
   }, []);
+  // Categories the user changed on a row before importing, by row key.
+  const [overrides, setOverrides] = useState<Record<string, string>>({});
+  const categoryList = useCategories();
+  const categoryOf = (r: Row) =>
+    overrides[r.key] ?? resolveCategory(r.merchant, r.description);
+
+  const changeCategory = (r: Row) => {
+    const options = categoryList.all;
+    const set = (c: string) => setOverrides(prev => ({ ...prev, [r.key]: c }));
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          title: r.merchant,
+          message: 'Category for this payment',
+          options: [...options, 'Cancel'],
+          cancelButtonIndex: options.length,
+        },
+        i => options[i] && set(options[i]),
+      );
+    } else {
+      Alert.alert(r.merchant, 'Category for this payment', [
+        ...options.map(c => ({ text: c, onPress: () => set(c) })),
+        { text: 'Cancel', style: 'cancel' as const },
+      ]);
+    }
+  };
 
   const choose = async () => {
     try {
@@ -206,12 +239,18 @@ export default function ImportScreen({ navigation, route }: Props) {
           currency: 'AED',
           merchant: r.merchant,
           card: null,
-          category: resolveCategory(r.merchant, r.description),
+          category: categoryOf(r),
           source: 'statement',
           note: r.description.slice(0, 200),
           created_at: r.date,
         })),
       );
+      // Categories changed here are remembered for the merchant next time.
+      for (const r of chosen) {
+        if (overrides[r.key]) {
+          await rememberCategory(r.merchant, overrides[r.key]).catch(() => {});
+        }
+      }
       let salaryMonths = 0;
       if (useSalary && salaries.length) {
         const info = await getSalaryInfo();
@@ -406,7 +445,7 @@ export default function ImportScreen({ navigation, route }: Props) {
         )}
         renderItem={({ item: r }) => {
           const on = selected.has(r.key);
-          const category = resolveCategory(r.merchant, r.description);
+          const category = categoryOf(r);
           const c = categoryStyle(category, t);
           return (
             <Pressable
@@ -437,7 +476,13 @@ export default function ImportScreen({ navigation, route }: Props) {
                     month: 'short',
                   })}
                   {' · '}
-                  <Text style={{ color: c.color }}>{category}</Text>
+                  <Text
+                    onPress={() => changeCategory(r)}
+                    suppressHighlighting={false}
+                    style={[styles.categoryLink, { color: c.color }]}
+                  >
+                    {category} ▾
+                  </Text>
                   {r.duplicate ? ' · already logged' : ''}
                 </Text>
               </View>
@@ -565,6 +610,7 @@ const styles = StyleSheet.create({
   },
   checkMark: { fontSize: 14, fontWeight: '900', marginTop: -1 },
   bold: { fontWeight: '700' },
+  categoryLink: { fontWeight: '700' },
   meta: { fontSize: 12, marginTop: 3, lineHeight: 17 },
   amount: { fontWeight: '800', fontSize: 15 },
   footer: {

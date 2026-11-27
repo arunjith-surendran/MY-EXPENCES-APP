@@ -13,6 +13,7 @@ import {
   FlatList,
   Platform,
   Pressable,
+  ScrollView,
   Share,
   StyleSheet,
   Text,
@@ -34,6 +35,7 @@ import {
   listAutoLogCards,
   listDayTotals,
   listExpenses,
+  sumAed,
   listMonthCategoryTotals,
   listMonthSummaries,
   type MonthCategoryTotal,
@@ -57,7 +59,10 @@ import {
   type GroupTotals,
   weekdayAverages,
 } from '../lib/insights';
+import { budgetProgress, type BudgetProgress } from '../lib/budgets';
+import { useCategories } from '../lib/categories';
 import { useConversion } from '../lib/currency';
+import { runUpkeep } from '../lib/upkeep';
 import {
   askPermissionOnce,
   syncTeamNotifications,
@@ -116,7 +121,13 @@ export default function HomeScreen({ navigation }: Props) {
   const [cards, setCards] = useState<string[]>([]);
   const [salary, setSalaryInfo] = useState<SalaryInfo | null>(null);
 
+  const [budgets, setBudgets] = useState<BudgetProgress[]>([]);
+  const categoryList = useCategories();
+
   const load = useCallback(() => {
+    budgetProgress()
+      .then(setBudgets)
+      .catch(() => {});
     listMonthSummaries()
       .then(setSummaries)
       .catch(err => Alert.alert('Could not load expenses', String(err)));
@@ -132,13 +143,7 @@ export default function HomeScreen({ navigation }: Props) {
       .then(setDayTotals)
       .catch(() => {});
     listExpenses(today, today + DAY_MS)
-      .then(rows =>
-        setTodayTotal(
-          rows
-            .filter(e => e.currency === 'AED')
-            .reduce((sum, e) => sum + e.amount, 0),
-        ),
-      )
+      .then(rows => setTodayTotal(sumAed(rows)))
       .catch(() => {});
     getAutoLogSince()
       .then(since => setAutoLogOn(since != null))
@@ -172,15 +177,19 @@ export default function HomeScreen({ navigation }: Props) {
   }, []);
 
   // Reload whenever the screen regains focus (e.g. after an auto-logged tap).
-  useFocusEffect(load);
+  // Recurring payments that came due are added first, so they show straight away.
+  const refresh = useCallback(() => {
+    runUpkeep().finally(load);
+  }, [load]);
+  useFocusEffect(refresh);
 
   // Payments saved by the Wallet automation happen in the background; refresh on return.
   useEffect(() => {
     const sub = AppState.addEventListener('change', state => {
-      if (state === 'active') load();
+      if (state === 'active') refresh();
     });
     return () => sub.remove();
-  }, [load]);
+  }, [refresh]);
 
   const current = monthKey();
   const salaryOf = useCallback(
@@ -232,7 +241,11 @@ export default function HomeScreen({ navigation }: Props) {
     };
   }, [summaries, current]);
 
-  const groups = useMemo(() => groupByMonth(categoryTotals), [categoryTotals]);
+  const customGroups = categoryList.groups;
+  const groups = useMemo(
+    () => groupByMonth(categoryTotals, customGroups),
+    [categoryTotals, customGroups],
+  );
   const health = useMemo(() => {
     const today = new Date();
     return assessMonth({
@@ -324,18 +337,24 @@ export default function HomeScreen({ navigation }: Props) {
   const openMenu = useCallback(() => {
     const actions: [string, () => void][] = [
       ['Search & filter', () => navigation.navigate('Search')],
+      ['Insights', () => navigation.navigate('Insights')],
+      ['Budgets', () => navigation.navigate('Budgets')],
+      ['Recurring payments', () => navigation.navigate('Recurring')],
+      ['Categories', () => navigation.navigate('Categories')],
       ['Import bank statement', () => navigation.navigate('Import')],
       ['Export all (CSV)', exportAll],
+      ['Backup & restore', () => navigation.navigate('Backup')],
       ['Salary', () => navigation.navigate('Salary', { month: current })],
       ['Apple Pay auto-logging', () => navigation.navigate('Setup')],
       ['Appearance (light / dark)', chooseAppearance],
+      ['Recently deleted', () => navigation.navigate('Trash')],
       ['Delete expenses…', () => navigation.navigate('Delete')],
     ];
     if (Platform.OS === 'ios') {
       ActionSheetIOS.showActionSheetWithOptions(
         {
           options: [...actions.map(a => a[0]), 'Cancel'],
-          destructiveButtonIndex: 6,
+          destructiveButtonIndex: actions.length - 1,
           cancelButtonIndex: actions.length,
         },
         i => actions[i]?.[1](),
@@ -354,29 +373,6 @@ export default function HomeScreen({ navigation }: Props) {
       // eslint-disable-next-line react/no-unstable-nested-components
       headerRight: () => (
         <View style={styles.headerButtons}>
-          <Pressable
-            onPress={() => navigation.navigate('Search')}
-            hitSlop={10}
-            accessibilityLabel="Search expenses"
-            style={[styles.botButton, { backgroundColor: t.accentSoft }]}
-          >
-            <Svg width={20} height={20} viewBox="0 0 24 24">
-              <Circle
-                cx={11}
-                cy={11}
-                r={7}
-                stroke={t.accent}
-                strokeWidth={2}
-                fill="none"
-              />
-              <Path
-                d="m20 20-4-4"
-                stroke={t.accent}
-                strokeWidth={2}
-                strokeLinecap="round"
-              />
-            </Svg>
-          </Pressable>
           <Pressable
             onPress={() => navigation.navigate('Notifications')}
             hitSlop={10}
@@ -482,6 +478,86 @@ export default function HomeScreen({ navigation }: Props) {
         contentContainerStyle={styles.list}
         ListHeaderComponent={
           <View>
+            <Pressable
+              onPress={() => navigation.navigate('Search')}
+              accessibilityRole="search"
+              accessibilityLabel="Search expenses"
+              style={({ pressed }) => [
+                styles.searchBar,
+                {
+                  backgroundColor: pressed ? t.cardHi : t.card,
+                  borderColor: t.border,
+                },
+                cardShadow(t),
+              ]}
+            >
+              <Svg width={18} height={18} viewBox="0 0 24 24">
+                <Circle
+                  cx={11}
+                  cy={11}
+                  r={7}
+                  stroke={t.muted}
+                  strokeWidth={2.2}
+                  fill="none"
+                />
+                <Path
+                  d="m20 20-4-4"
+                  stroke={t.muted}
+                  strokeWidth={2.2}
+                  strokeLinecap="round"
+                />
+              </Svg>
+              <Text style={[styles.searchText, { color: t.muted }]}>
+                Search shops, notes, #tags, amounts
+              </Text>
+              <View
+                style={[styles.searchFilter, { backgroundColor: t.accentSoft }]}
+              >
+                <Svg width={14} height={14} viewBox="0 0 24 24">
+                  <Path
+                    d="M3 5h18M6 12h12M10 19h4"
+                    stroke={t.accent}
+                    strokeWidth={2.6}
+                    strokeLinecap="round"
+                  />
+                </Svg>
+              </View>
+            </Pressable>
+
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.quick}
+            >
+              {(
+                [
+                  ['📊', 'Insights', () => navigation.navigate('Insights')],
+                  ['🎯', 'Budgets', () => navigation.navigate('Budgets')],
+                  ['🔁', 'Recurring', () => navigation.navigate('Recurring')],
+                  ['🏷️', 'Categories', () => navigation.navigate('Categories')],
+                  ['🛟', 'Backup', () => navigation.navigate('Backup')],
+                ] as const
+              ).map(([icon, label, go]) => (
+                <Pressable
+                  key={label}
+                  onPress={go}
+                  accessibilityRole="button"
+                  style={({ pressed }) => [
+                    styles.quickItem,
+                    {
+                      backgroundColor: pressed ? t.cardHi : t.card,
+                      borderColor: t.border,
+                    },
+                  ]}
+                >
+                  <Text style={styles.quickIcon}>{icon}</Text>
+                  <Text style={[styles.quickLabel, { color: t.text }]}>
+                    {label}
+                  </Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+
             {offer && (
               <Pressable
                 onPress={() => navigation.navigate('Paywall')}
@@ -625,6 +701,67 @@ export default function HomeScreen({ navigation }: Props) {
                 navigation.navigate('Salary', { month: current })
               }
             />
+
+            {budgets.length > 0 && (
+              <Pressable
+                onPress={() => navigation.navigate('Budgets')}
+                accessibilityRole="button"
+                style={[
+                  styles.card,
+                  { backgroundColor: t.card, borderColor: t.border },
+                  cardShadow(t),
+                ]}
+              >
+                <View style={styles.row}>
+                  <Text style={[styles.label, { color: t.muted }]}>
+                    Category budgets
+                  </Text>
+                  <Text style={[styles.label, { color: t.accent }]}>
+                    Edit ›
+                  </Text>
+                </View>
+                {budgets.slice(0, 4).map(b => {
+                  const ratio = b.budget > 0 ? b.spent / b.budget : 0;
+                  const color =
+                    ratio >= 1
+                      ? t.danger
+                      : ratio >= 0.8
+                      ? t.warning
+                      : t.success;
+                  return (
+                    <View key={b.category} style={styles.budgetRow}>
+                      <View style={styles.row}>
+                        <Text
+                          numberOfLines={1}
+                          style={[styles.budgetName, { color: t.text }]}
+                        >
+                          {b.category}
+                        </Text>
+                        <Text style={[styles.budgetMeta, { color }]}>
+                          {formatMoney(b.spent)} / {formatMoney(b.budget)}
+                        </Text>
+                      </View>
+                      <View
+                        style={[
+                          styles.budgetTrack,
+                          { backgroundColor: t.cardHi },
+                        ]}
+                      >
+                        <View
+                          style={[
+                            styles.budgetFill,
+                            {
+                              width: `${Math.min(100, ratio * 100)}%`,
+                              backgroundColor: color,
+                            },
+                          ]}
+                        />
+                      </View>
+                    </View>
+                  );
+                })}
+              </Pressable>
+            )}
 
             {hasPro ? (
               <>
@@ -901,6 +1038,41 @@ const styles = StyleSheet.create({
   trialText: { fontSize: 13, fontWeight: '800' },
   menu: { fontSize: 18, fontWeight: '800', letterSpacing: 1 },
   headerButtons: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  searchBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingLeft: 14,
+    paddingRight: 6,
+    paddingVertical: 6,
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  searchText: { flex: 1, fontSize: 15, paddingVertical: 6 },
+  searchFilter: {
+    width: 34,
+    height: 34,
+    borderRadius: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  quick: { gap: 8, paddingVertical: 12 },
+  budgetRow: { gap: 6, marginTop: 10 },
+  budgetName: { flex: 1, fontSize: 14, fontWeight: '700' },
+  budgetMeta: { fontSize: 12, fontWeight: '700' },
+  budgetTrack: { height: 8, borderRadius: 4, overflow: 'hidden' },
+  budgetFill: { height: 8, borderRadius: 4 },
+  quickItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  quickIcon: { fontSize: 15 },
+  quickLabel: { fontSize: 13, fontWeight: '700' },
   dot: {
     position: 'absolute',
     top: -1,

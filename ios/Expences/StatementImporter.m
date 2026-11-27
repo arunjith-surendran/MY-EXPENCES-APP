@@ -11,6 +11,8 @@
  *   pick()                    -> { name, path } or null if cancelled
  *   extractText(path, pass?)  -> text; rejects with code "PASSWORD" if the PDF is locked
  *                                 and no (or a wrong) password was given.
+ *   pickBackup()              -> { name, path } of a .json backup, or null if cancelled
+ *   writeFile(name, text)     -> path of a new file with that text in the temp folder
  */
 @interface StatementImporter : NSObject <RCTBridgeModule, UIDocumentPickerDelegate>
 @property(nonatomic, copy) RCTPromiseResolveBlock pickResolve;
@@ -28,6 +30,38 @@ RCT_EXPORT_MODULE();
 
 RCT_EXPORT_METHOD(pick : (RCTPromiseResolveBlock)resolve reject : (RCTPromiseRejectBlock)reject)
 {
+  [self presentPickerFor:@[ UTTypePDF, UTTypeCommaSeparatedText, UTTypePlainText ]
+                 resolve:resolve
+                  reject:reject];
+}
+
+RCT_EXPORT_METHOD(pickBackup : (RCTPromiseResolveBlock)resolve reject : (RCTPromiseRejectBlock)reject)
+{
+  [self presentPickerFor:@[ UTTypeJSON, UTTypePlainText ] resolve:resolve reject:reject];
+}
+
+RCT_EXPORT_METHOD(writeFile
+                  : (NSString *)name text
+                  : (NSString *)text resolve
+                  : (RCTPromiseResolveBlock)resolve reject
+                  : (RCTPromiseRejectBlock)reject)
+{
+  NSString *safe = [[name componentsSeparatedByCharactersInSet:
+                              [NSCharacterSet characterSetWithCharactersInString:@"/\\:"]]
+      componentsJoinedByString:@"-"];
+  NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:safe];
+  NSError *error = nil;
+  if (![text writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:&error]) {
+    reject(@"WRITE", error.localizedDescription ?: @"Couldn't write the file.", error);
+    return;
+  }
+  resolve(path);
+}
+
+- (void)presentPickerFor:(NSArray<UTType *> *)types
+                 resolve:(RCTPromiseResolveBlock)resolve
+                  reject:(RCTPromiseRejectBlock)reject
+{
   dispatch_async(dispatch_get_main_queue(), ^{
     if (self.pickResolve != nil) {
       reject(@"BUSY", @"A file picker is already open.", nil);
@@ -36,7 +70,6 @@ RCT_EXPORT_METHOD(pick : (RCTPromiseResolveBlock)resolve reject : (RCTPromiseRej
     self.pickResolve = resolve;
     self.pickReject = reject;
 
-    NSArray<UTType *> *types = @[ UTTypePDF, UTTypeCommaSeparatedText, UTTypePlainText ];
     UIDocumentPickerViewController *picker =
         [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:types asCopy:YES];
     picker.delegate = self;

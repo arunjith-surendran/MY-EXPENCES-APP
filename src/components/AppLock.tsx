@@ -223,7 +223,7 @@ function LockScreen({
         </Text>
 
         <View style={styles.features}>
-          <Feature icon="phone" text="Stored only on this iPhone" />
+          <Feature icon="phone" text="Never sent to our servers" />
           <Feature icon="shield" text={`Protected by ${label}`} />
           <Feature icon="eye" text="No bank login, ever" />
         </View>

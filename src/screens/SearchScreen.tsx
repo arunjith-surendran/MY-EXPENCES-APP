@@ -27,9 +27,12 @@ import {
   type ExpenseSearch,
   firstExpenseAt,
   listMonthSummaries,
+  listTags,
   listUsedCategories,
   type MonthSummary,
   searchExpenses,
+  aedOf,
+  sumAed,
   toCsv,
 } from '../lib/db';
 import { monthKey, monthLabel } from '../lib/months';
@@ -54,6 +57,7 @@ const SOURCES: [Source, string][] = [
   ['apple_pay', 'Apple Pay'],
   ['manual', 'Added by hand'],
   ['statement', 'Bank statement'],
+  ['recurring', 'Recurring'],
 ];
 
 const SORTS: [Sort, string][] = [
@@ -73,12 +77,19 @@ export default function SearchScreen({ navigation, route }: Props) {
 
   const [text, setText] = useState('');
   const [query, setQuery] = useState('');
-  const [showFilters, setShowFilters] = useState(presetMonth != null);
+  const [showFilters, setShowFilters] = useState(
+    presetMonth != null || route.params?.category != null,
+  );
   const [period, setPeriod] = useState<Period>(presetMonth ? 'month' : 'all');
   const [month, setMonth] = useState(presetMonth ?? monthKey());
   const [from, setFrom] = useState(() => addDays(new Date(), -6));
   const [to, setTo] = useState(() => new Date());
-  const [categories, setCategories] = useState<Set<string>>(new Set());
+  const presetCategory = route.params?.category;
+  const [categories, setCategories] = useState<Set<string>>(
+    () => new Set(presetCategory ? [presetCategory] : []),
+  );
+  const [tags, setTags] = useState<Set<string>>(new Set());
+  const [allTags, setAllTags] = useState<string[]>([]);
   const [method, setMethod] = useState<Method>('any');
   const [sources, setSources] = useState<Set<Source>>(new Set());
   const [minText, setMinText] = useState('');
@@ -109,6 +120,7 @@ export default function SearchScreen({ navigation, route }: Props) {
       start: range.start,
       end: range.end,
       categories: [...categories],
+      tags: [...tags],
       method: method === 'any' ? undefined : method,
       sources: [...sources],
       minAmount,
@@ -117,7 +129,17 @@ export default function SearchScreen({ navigation, route }: Props) {
     })
       .then(setResults)
       .catch(() => setResults([]));
-  }, [query, range, categories, method, sources, minAmount, maxAmount, sort]);
+  }, [
+    query,
+    range,
+    categories,
+    tags,
+    method,
+    sources,
+    minAmount,
+    maxAmount,
+    sort,
+  ]);
 
   // Again on coming back, so an edited or deleted expense shows up right.
   useFocusEffect(
@@ -134,6 +156,9 @@ export default function SearchScreen({ navigation, route }: Props) {
       listUsedCategories()
         .then(setUsedCategories)
         .catch(() => {});
+      listTags()
+        .then(setAllTags)
+        .catch(() => {});
       firstExpenseAt()
         .then(setFirstAt)
         .catch(() => {});
@@ -143,6 +168,7 @@ export default function SearchScreen({ navigation, route }: Props) {
   const activeFilters =
     (period !== 'all' ? 1 : 0) +
     (categories.size > 0 ? 1 : 0) +
+    (tags.size > 0 ? 1 : 0) +
     (method !== 'any' ? 1 : 0) +
     (sources.size > 0 ? 1 : 0) +
     (minAmount != null || maxAmount != null ? 1 : 0);
@@ -150,6 +176,7 @@ export default function SearchScreen({ navigation, route }: Props) {
   const reset = () => {
     setPeriod('all');
     setCategories(new Set());
+    setTags(new Set());
     setMethod('any');
     setSources(new Set());
     setMinText('');
@@ -205,10 +232,8 @@ export default function SearchScreen({ navigation, route }: Props) {
     });
   }, [navigation, exportCsv, results, t.accent]);
 
-  const total = (results ?? [])
-    .filter(e => e.currency === 'AED')
-    .reduce((s, e) => s + e.amount, 0);
-  const aedCount = (results ?? []).filter(e => e.currency === 'AED').length;
+  const total = sumAed(results ?? []);
+  const aedCount = (results ?? []).filter(e => aedOf(e) != null).length;
 
   const input = [
     styles.input,
@@ -265,6 +290,22 @@ export default function SearchScreen({ navigation, route }: Props) {
                 on={categories.has(c)}
                 color={categoryStyle(c, t).color}
                 onPress={() => setCategories(prev => toggleIn(prev, c))}
+              />
+            ))}
+          </View>
+        </>
+      )}
+
+      {allTags.length > 0 && (
+        <>
+          <Text style={[styles.label, { color: t.muted }]}>Tags</Text>
+          <View style={styles.chips}>
+            {allTags.slice(0, 20).map(tag => (
+              <Chip
+                key={tag}
+                label={tag}
+                on={tags.has(tag)}
+                onPress={() => setTags(prev => toggleIn(prev, tag))}
               />
             ))}
           </View>
@@ -405,7 +446,7 @@ export default function SearchScreen({ navigation, route }: Props) {
           <TextInput
             value={text}
             onChangeText={setText}
-            placeholder="Merchant, note, card or amount"
+            placeholder="Shop, note, #tag, 45 or 50-100"
             placeholderTextColor={t.muted}
             autoFocus={presetMonth == null}
             autoCorrect={false}

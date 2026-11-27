@@ -29,8 +29,11 @@ import BudgetCard from '../components/BudgetCard';
 import ProLock from '../components/ProLock';
 import DailyChart from '../components/DailyChart';
 import Gradient from '../components/Gradient';
+import { useUndo } from '../components/UndoToast';
 import {
+  aedOf,
   deleteExpensesByIds,
+  sumAed,
   getSalaryInfo,
   salaryFor,
   type Expense,
@@ -62,9 +65,9 @@ export default function MonthScreen({ route }: Props) {
   // Same object either way; typed as the stack so it can open Add, Import and Salary.
   const navigation =
     useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const isTab = route.name === 'ThisMonth';
   const { hasPro } = useSubscription();
   const { convert } = useConversion();
+  const { showUndo } = useUndo();
   const month = route.name === 'Month' ? route.params.month : monthKey();
   const isCurrentMonth = month === monthKey();
   const [items, setItems] = useState<Expense[]>([]);
@@ -100,11 +103,13 @@ export default function MonthScreen({ route }: Props) {
     let cashSum = 0;
     const perCategory: Record<string, number> = {};
     for (const e of items) {
-      if (e.currency !== 'AED') continue; // totals are AED-only
-      monthSum += e.amount;
-      if (e.method === 'cash') cashSum += e.amount;
-      if (e.created_at >= today) todaySum += e.amount;
-      perCategory[e.category] = (perCategory[e.category] ?? 0) + e.amount;
+      // Totals are in AED: other currencies count once their rate is known.
+      const aed = aedOf(e);
+      if (aed == null) continue;
+      monthSum += aed;
+      if (e.method === 'cash') cashSum += aed;
+      if (e.created_at >= today) todaySum += aed;
+      perCategory[e.category] = (perCategory[e.category] ?? 0) + aed;
     }
     return {
       monthTotal: monthSum,
@@ -118,10 +123,11 @@ export default function MonthScreen({ route }: Props) {
     const perDay = new Map<number, number>();
     let biggest: Expense | null = null;
     for (const e of items) {
-      if (e.currency !== 'AED') continue;
+      const aed = aedOf(e);
+      if (aed == null) continue;
       const d = new Date(e.created_at).getDate();
-      perDay.set(d, (perDay.get(d) ?? 0) + e.amount);
-      if (!biggest || e.amount > biggest.amount) biggest = e;
+      perDay.set(d, (perDay.get(d) ?? 0) + aed);
+      if (!biggest || aed > (aedOf(biggest) ?? 0)) biggest = e;
     }
     let topDay = 0;
     let topAmount = 0;
@@ -163,7 +169,7 @@ export default function MonthScreen({ route }: Props) {
         out.push(s);
       }
       s.data.push(e);
-      if (e.currency === 'AED') s.total += e.amount;
+      s.total += aedOf(e) ?? 0;
     }
     return out;
   }, [items]);
@@ -179,9 +185,7 @@ export default function MonthScreen({ route }: Props) {
   const deleteSelected = useCallback(() => {
     if (!selected || selected.size === 0) return;
     const chosen = items.filter(e => selected.has(e.id));
-    const total = chosen
-      .filter(e => e.currency === 'AED')
-      .reduce((sum, e) => sum + e.amount, 0);
+    const total = sumAed(chosen);
     Alert.alert(
       `Delete ${chosen.length} expense${chosen.length === 1 ? '' : 's'}?`,
       `${formatMoney(total)} in total. This can't be undone.`,
@@ -191,14 +195,20 @@ export default function MonthScreen({ route }: Props) {
           text: 'Delete',
           style: 'destructive',
           onPress: async () => {
-            await deleteExpensesByIds(chosen.map(e => e.id)).catch(() => 0);
+            const ids = chosen.map(e => e.id);
+            await deleteExpensesByIds(ids).catch(() => 0);
             setSelected(null);
             load();
+            showUndo({
+              message: `${ids.length} expense${ids.length === 1 ? '' : 's'} deleted`,
+              ids,
+              onUndone: load,
+            });
           },
         },
       ],
     );
-  }, [items, load, selected]);
+  }, [items, load, selected, showUndo]);
 
   const exportCsv = useCallback(async () => {
     if (items.length === 0) {
@@ -214,6 +224,7 @@ export default function MonthScreen({ route }: Props) {
         `Import ${monthLabel(month)} statement`,
         () => navigation.navigate('Import', { month }),
       ],
+      ['Insights', () => navigation.navigate('Insights', { month })],
       ['Export this month (CSV)', exportCsv],
       ['Select expenses', () => setSelected(new Set())],
       ['Delete expenses…', () => navigation.navigate('Delete', { month })],
@@ -222,18 +233,22 @@ export default function MonthScreen({ route }: Props) {
       ActionSheetIOS.showActionSheetWithOptions(
         {
           options: [...actions.map(a => a[0]), 'Cancel'],
-          destructiveButtonIndex: 3,
+          destructiveButtonIndex: actions.length - 1,
           cancelButtonIndex: actions.length,
         },
         i => actions[i]?.[1](),
       );
     } else {
       Alert.alert('Options', undefined, [
-        { text: actions[0][0], onPress: actions[0][1] },
-        { text: actions[1][0], onPress: actions[1][1] },
-        { text: actions[2][0], onPress: actions[2][1] },
-        { text: actions[3][0], style: 'destructive', onPress: actions[3][1] },
-        { text: 'Cancel', style: 'cancel' },
+        ...actions.map(([text, onPress], i) => ({
+          text,
+          onPress,
+          style:
+            i === actions.length - 1
+              ? ('destructive' as const)
+              : ('default' as const),
+        })),
+        { text: 'Cancel', style: 'cancel' as const },
       ]);
     }
   }, [exportCsv, month, navigation]);
@@ -639,17 +654,6 @@ export default function MonthScreen({ route }: Props) {
         </View>
       )}
 
-      {/* As a tab, the tab bar's "+" adds instead. */}
-      {!isTab && !selecting && (
-        <Pressable
-          onPress={() => navigation.navigate('Add', { month })}
-          style={[styles.fab, glow(t.gradients.hero[1], 20)]}
-          accessibilityLabel="Add expense"
-        >
-          <Gradient colors={t.gradients.hero} radius={FAB_RADIUS} />
-          <Text style={[styles.fabText, { color: t.onAccent }]}>+ Add</Text>
-        </Pressable>
-      )}
     </View>
   );
 }
@@ -718,11 +722,10 @@ function Tile({
   );
 }
 
-const FAB_RADIUS = 30;
 
 const styles = StyleSheet.create({
   flex: { flex: 1 },
-  list: { padding: 16, paddingBottom: 120 },
+  list: { padding: 16, paddingBottom: 32 },
   menu: { fontSize: 18, fontWeight: '800', letterSpacing: 1 },
   hero: {
     padding: 20,
@@ -823,14 +826,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
     paddingVertical: 1,
     overflow: 'hidden',
-  },
-  fab: {
-    position: 'absolute',
-    right: 20,
-    bottom: 40,
-    paddingHorizontal: 26,
-    paddingVertical: 16,
-    borderRadius: FAB_RADIUS,
   },
   fabText: { fontWeight: '800', fontSize: 17 },
   headerBtn: { fontSize: 16, fontWeight: '600' },

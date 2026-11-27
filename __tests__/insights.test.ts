@@ -176,3 +176,50 @@ describe('weekdayAverages', () => {
     expect(avg[4]).toBe(70);
   });
 });
+
+describe('compareCategories and topMerchants', () => {
+  const {
+    compareCategories,
+    topMerchants,
+    groupOf,
+  } = require('../src/lib/insights');
+
+  it('sorts by the biggest change and marks new categories', () => {
+    const out = compareCategories(
+      new Map([
+        ['Food & Dining', 300],
+        ['Gym', 100],
+      ]),
+      new Map([
+        ['Food & Dining', 200],
+        ['Fuel', 400],
+      ]),
+    );
+    expect(out.map((c: { category: string }) => c.category)).toEqual([
+      'Fuel',
+      'Food & Dining',
+      'Gym',
+    ]);
+    expect(out[1].ratio).toBeCloseTo(0.5);
+    expect(out[2].ratio).toBeNull();
+  });
+
+  it('groups merchants case-insensitively', () => {
+    const out = topMerchants([
+      { merchant: 'Carrefour', aed: 50 },
+      { merchant: 'carrefour ', aed: 30 },
+      { merchant: 'ENOC', aed: 60 },
+    ]);
+    expect(out[0]).toEqual({ merchant: 'Carrefour', total: 80, count: 2 });
+  });
+
+  it('uses the group chosen for a custom category', () => {
+    expect(groupOf('Rent')).toBe('other');
+    expect(groupOf('Rent', new Map([['Rent', 'essentials']]))).toBe(
+      'essentials',
+    );
+    expect(groupOf('Groceries', new Map([['Groceries', 'lifestyle']]))).toBe(
+      'essentials',
+    );
+  });
+});

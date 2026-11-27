@@ -170,6 +170,43 @@ export default function AccountScreen() {
         })}
       </View>
 
+      <Text style={[styles.section, { color: t.muted }]}>Your data</Text>
+      <View
+        style={[
+          styles.group,
+          { backgroundColor: t.card, borderColor: t.border },
+        ]}
+      >
+        <Row
+          label="🛟 Backup & restore"
+          onPress={() => navigation.navigate('Backup')}
+        />
+        <Row
+          label="🏷️ Categories"
+          onPress={() => navigation.navigate('Categories')}
+          divider
+        />
+        <Row
+          label="🎯 Budgets"
+          onPress={() => navigation.navigate('Budgets')}
+          divider
+        />
+        <Row
+          label="🔁 Recurring payments"
+          onPress={() => navigation.navigate('Recurring')}
+          divider
+        />
+        <Row
+          label="🗑️ Recently deleted"
+          onPress={() => navigation.navigate('Trash')}
+          divider
+        />
+      </View>
+      <Text style={[styles.caption, { color: t.muted }]}>
+        Everything stays on this phone. Save a backup now and then so you don't
+        lose it if the app is removed.
+      </Text>
+
       <Text style={[styles.section, { color: t.muted }]}>Currency</Text>
       <View
         style={[

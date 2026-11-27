@@ -1,6 +1,7 @@
 import { open, type DB } from '@op-engineering/op-sqlite';
 
 import { shiftMonth } from './months';
+import { parseSearch, tagsIn } from './searchQuery';
 
 export type PaymentMethod = 'card' | 'cash';
 
@@ -11,12 +12,30 @@ export type Expense = {
   merchant: string;
   card: string | null;
   category: string;
-  source: 'apple_pay' | 'manual' | 'statement';
+  source: 'apple_pay' | 'manual' | 'statement' | 'recurring';
   /** How it was paid: card (Apple Pay, bank statement, or entered by hand) or cash. */
   method: PaymentMethod;
   note: string | null;
   created_at: number; // unix ms
+  /** What a non-AED expense was worth in AED (filled in from exchange rates); null for AED. */
+  aed_amount?: number | null;
 };
+
+/** The expense in AED for totals, or null if it's in another currency and has no rate yet. */
+export const aedOf = (e: Pick<Expense, 'amount' | 'currency' | 'aed_amount'>) =>
+  e.currency === 'AED' ? e.amount : e.aed_amount ?? null;
+
+/** Total in AED of the expenses that have an AED value. */
+export const sumAed = (items: Expense[]) =>
+  items.reduce((sum, e) => sum + (aedOf(e) ?? 0), 0);
+
+/** SQL for the same, for SUM(): AED amounts, converted ones, and 0 for the rest. */
+const AED_SQL =
+  "COALESCE(CASE WHEN currency = 'AED' THEN amount ELSE aed_amount END, 0)";
+
+/** Columns copied between `expenses` and the `deleted_expenses` bin. */
+const EXPENSE_COLUMNS =
+  'id, amount, currency, merchant, card, category, source, note, created_at, method, aed_amount';
 
 export type NewExpense = Omit<Expense, 'id' | 'created_at' | 'method'> & {
   created_at?: number;
@@ -36,13 +55,26 @@ export type MonthSummary = {
   count: number;
 };
 
-const DATABASE_VERSION = 5;
+const DATABASE_VERSION = 6;
 
 let db: DB | null = null;
 
-function getDb(): DB {
+/** The app's database; feature modules (backup, budgets, recurring, receipts) build on it. */
+export function getDb(): DB {
   if (!db) db = open({ name: 'expenses.db' });
   return db;
+}
+
+/** ALTER TABLE … ADD COLUMN that can run twice (if an upgrade stopped half way). */
+async function addColumnIfMissing(
+  d: DB,
+  table: string,
+  column: string,
+  type: string,
+) {
+  const { rows } = await d.execute(`PRAGMA table_info(${table})`);
+  if (rows.some(r => r.name === column)) return;
+  await d.execute(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
 }
 
 export async function migrateDbIfNeeded() {
@@ -101,6 +133,55 @@ export async function migrateDbIfNeeded() {
       updated_at INTEGER NOT NULL
     )`);
   }
+  if (current < 6) {
+    // AED value of foreign-currency expenses, so they count in totals.
+    await addColumnIfMissing(d, 'expenses', 'aed_amount', 'REAL');
+    // Deleted expenses wait here for 30 days, so a delete can be undone.
+    await d.execute(`CREATE TABLE IF NOT EXISTS deleted_expenses (
+      id INTEGER PRIMARY KEY,
+      amount REAL NOT NULL,
+      currency TEXT NOT NULL,
+      merchant TEXT NOT NULL,
+      card TEXT,
+      category TEXT NOT NULL,
+      source TEXT NOT NULL,
+      note TEXT,
+      created_at INTEGER NOT NULL,
+      method TEXT NOT NULL,
+      aed_amount REAL,
+      deleted_at INTEGER NOT NULL
+    )`);
+    // essentials / lifestyle / other, for the spending-health chart.
+    await addColumnIfMissing(
+      d,
+      'categories',
+      'grp',
+      "TEXT NOT NULL DEFAULT 'other'",
+    );
+    await d.execute(`CREATE TABLE IF NOT EXISTS budgets (
+      category TEXT PRIMARY KEY,
+      amount REAL NOT NULL
+    )`);
+    await d.execute(`CREATE TABLE IF NOT EXISTS recurring (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      amount REAL NOT NULL,
+      merchant TEXT NOT NULL,
+      category TEXT NOT NULL,
+      method TEXT NOT NULL DEFAULT 'card',
+      note TEXT,
+      day INTEGER NOT NULL,
+      next_at INTEGER NOT NULL,
+      remind INTEGER NOT NULL DEFAULT 1,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at INTEGER NOT NULL
+    )`);
+    // Receipt photos as JPEG base64, one per expense; they stay on the phone.
+    await d.execute(`CREATE TABLE IF NOT EXISTS receipts (
+      expense_id INTEGER PRIMARY KEY,
+      data TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    )`);
+  }
   await d.execute(`PRAGMA user_version = ${DATABASE_VERSION}`);
 }
 
@@ -138,19 +219,80 @@ export async function getExpense(id: number): Promise<Expense | null> {
   return (rows[0] as unknown as Expense) ?? null;
 }
 
+export type CategoryGroup = 'essentials' | 'lifestyle' | 'other';
+
+export type CustomCategory = { name: string; group: CategoryGroup };
+
+const asGroup = (v: unknown): CategoryGroup =>
+  v === 'essentials' || v === 'lifestyle' ? v : 'other';
+
 /** Categories the user added, oldest first. */
-export async function listCustomCategories(): Promise<string[]> {
+export async function listCustomCategories(): Promise<CustomCategory[]> {
   const { rows } = await getDb().execute(
-    'SELECT name FROM categories ORDER BY created_at',
+    'SELECT name, grp FROM categories ORDER BY created_at',
   );
-  return rows.map(r => String(r.name));
+  return rows.map(r => ({ name: String(r.name), group: asGroup(r.grp) }));
 }
 
-export async function addCustomCategory(name: string) {
+export async function addCustomCategory(
+  name: string,
+  group: CategoryGroup = 'other',
+) {
   await getDb().execute(
-    'INSERT OR IGNORE INTO categories (name, created_at) VALUES (?, ?)',
-    [name, Date.now()],
+    'INSERT OR IGNORE INTO categories (name, created_at, grp) VALUES (?, ?, ?)',
+    [name, Date.now(), group],
   );
+}
+
+export async function setCategoryGroup(name: string, group: CategoryGroup) {
+  await getDb().execute('UPDATE categories SET grp = ? WHERE name = ?', [
+    group,
+    name,
+  ]);
+}
+
+/** Renames a category the user added, everywhere it's used. */
+export async function renameCustomCategory(from: string, to: string) {
+  await getDb().transaction(async tx => {
+    for (const table of ['expenses', 'deleted_expenses', 'recurring']) {
+      await tx.execute(`UPDATE ${table} SET category = ? WHERE category = ?`, [
+        to,
+        from,
+      ]);
+    }
+    await tx.execute(
+      'UPDATE merchant_categories SET category = ? WHERE category = ?',
+      [to, from],
+    );
+    await tx.execute(
+      'UPDATE OR REPLACE budgets SET category = ? WHERE category = ?',
+      [to, from],
+    );
+    await tx.execute('UPDATE categories SET name = ? WHERE name = ?', [
+      to,
+      from,
+    ]);
+  });
+}
+
+export type RememberedMerchant = {
+  merchant: string;
+  category: string;
+  updated_at: number;
+};
+
+/** Merchants whose category the app remembers, most recently changed first. */
+export async function listRememberedMerchants(): Promise<RememberedMerchant[]> {
+  const { rows } = await getDb().execute(
+    'SELECT merchant, category, updated_at FROM merchant_categories ORDER BY updated_at DESC',
+  );
+  return rows as unknown as RememberedMerchant[];
+}
+
+export async function forgetMerchant(merchantKeyValue: string) {
+  await getDb().execute('DELETE FROM merchant_categories WHERE merchant = ?', [
+    merchantKeyValue,
+  ]);
 }
 
 /** Removes a category the user added; its expenses move to "Other". */
@@ -163,6 +305,11 @@ export async function deleteCustomCategory(name: string) {
     await tx.execute('DELETE FROM merchant_categories WHERE category = ?', [
       name,
     ]);
+    await tx.execute(
+      "UPDATE recurring SET category = 'Other' WHERE category = ?",
+      [name],
+    );
+    await tx.execute('DELETE FROM budgets WHERE category = ?', [name]);
     await tx.execute('DELETE FROM categories WHERE name = ?', [name]);
   });
 }
@@ -428,8 +575,8 @@ export async function listExpenses(
 export async function listMonthSummaries(): Promise<MonthSummary[]> {
   const { rows } = await getDb().execute(
     `SELECT strftime('%Y-%m', created_at / 1000, 'unixepoch', 'localtime') AS month,
-            SUM(CASE WHEN currency = 'AED' THEN amount ELSE 0 END) AS total,
-            SUM(CASE WHEN currency = 'AED' AND method = 'cash' THEN amount ELSE 0 END) AS cash,
+            SUM(${AED_SQL}) AS total,
+            SUM(CASE WHEN method = 'cash' THEN ${AED_SQL} ELSE 0 END) AS cash,
             COUNT(*) AS count
      FROM expenses GROUP BY month ORDER BY month DESC`,
   );
@@ -448,9 +595,9 @@ export async function listDayTotals(
 ): Promise<Map<string, number>> {
   const { rows } = await getDb().execute(
     `SELECT strftime('%Y-%m-%d', created_at / 1000, 'unixepoch', 'localtime') AS day,
-            SUM(amount) AS total
+            SUM(${AED_SQL}) AS total
      FROM expenses
-     WHERE currency = 'AED' AND created_at >= ? AND created_at < ?
+     WHERE created_at >= ? AND created_at < ?
      GROUP BY day`,
     [start, end],
   );
@@ -467,8 +614,8 @@ export type MonthCategoryTotal = {
 export async function listMonthCategoryTotals(): Promise<MonthCategoryTotal[]> {
   const { rows } = await getDb().execute(
     `SELECT strftime('%Y-%m', created_at / 1000, 'unixepoch', 'localtime') AS month,
-            category, SUM(amount) AS total
-     FROM expenses WHERE currency = 'AED'
+            category, SUM(${AED_SQL}) AS total
+     FROM expenses
      GROUP BY month, category`,
   );
   return rows.map(r => ({
@@ -478,13 +625,16 @@ export async function listMonthCategoryTotals(): Promise<MonthCategoryTotal[]> {
   }));
 }
 
+/** Moves one expense to the bin (see deleteExpensesByIds). */
 export async function deleteExpense(id: number) {
-  await getDb().execute('DELETE FROM expenses WHERE id = ?', [id]);
+  await deleteExpensesByIds([id]);
 }
 
 export type ExpenseSearch = {
-  /** Matches merchant, note, card or category; a number also matches the amount. */
+  /** What was typed: words, #tags, an amount or a range (see parseSearch). */
   text?: string;
+  /** #tags that must all be in the note. */
+  tags?: string[];
   start: number;
   end: number;
   categories?: string[];
@@ -506,23 +656,38 @@ const SORT_SQL: Record<NonNullable<ExpenseSearch['sort']>, string> = {
 export async function searchExpenses(q: ExpenseSearch): Promise<Expense[]> {
   const where = ['created_at >= ?', 'created_at < ?'];
   const args: (string | number)[] = [q.start, q.end];
-  const text = q.text?.trim();
-  if (text) {
-    // Escape LIKE wildcards so "50%" or "a_b" are searched literally.
-    const like = `%${text.replace(/[\\%_]/g, c => `\\${c}`)}%`;
-    const parts = [
+  const parsed = parseSearch(q.text ?? '');
+  // Escape LIKE wildcards so "50%" or "a_b" are searched literally.
+  const like = (v: string) => `%${v.replace(/[\\%_]/g, c => `\\${c}`)}%`;
+  const parts: string[] = [];
+  if (parsed.words) {
+    const w = like(parsed.words);
+    parts.push(
       "merchant LIKE ? ESCAPE '\\'",
       "note LIKE ? ESCAPE '\\'",
       "card LIKE ? ESCAPE '\\'",
       "category LIKE ? ESCAPE '\\'",
-    ];
-    args.push(like, like, like, like);
-    const n = Number(text.replace(/,/g, ''));
-    if (Number.isFinite(n) && /\d/.test(text)) {
-      parts.push('ABS(amount - ?) < 0.005');
-      args.push(n);
-    }
-    where.push(`(${parts.join(' OR ')})`);
+    );
+    args.push(w, w, w, w);
+  }
+  if (parsed.exact != null) {
+    parts.push('ABS(amount - ?) < 0.005');
+    args.push(parsed.exact);
+  }
+  if (parts.length) where.push(`(${parts.join(' OR ')})`);
+  for (const tag of [...parsed.tags, ...(q.tags ?? [])]) {
+    where.push("note LIKE ? ESCAPE '\\'");
+    args.push(like(tag));
+  }
+  const min = Math.max(parsed.min ?? -Infinity, q.minAmount ?? -Infinity);
+  const max = Math.min(parsed.max ?? Infinity, q.maxAmount ?? Infinity);
+  if (Number.isFinite(min)) {
+    where.push('amount >= ?');
+    args.push(min);
+  }
+  if (Number.isFinite(max)) {
+    where.push('amount <= ?');
+    args.push(max);
   }
   if (q.categories?.length) {
     where.push(`category IN (${q.categories.map(() => '?').join(',')})`);
@@ -536,20 +701,26 @@ export async function searchExpenses(q: ExpenseSearch): Promise<Expense[]> {
     where.push(`source IN (${q.sources.map(() => '?').join(',')})`);
     args.push(...q.sources);
   }
-  if (q.minAmount != null) {
-    where.push('amount >= ?');
-    args.push(q.minAmount);
-  }
-  if (q.maxAmount != null) {
-    where.push('amount <= ?');
-    args.push(q.maxAmount);
-  }
   const { rows } = await getDb().execute(
     `SELECT * FROM expenses WHERE ${where.join(' AND ')}
      ORDER BY ${SORT_SQL[q.sort ?? 'newest']}`,
     args,
   );
   return rows as unknown as Expense[];
+}
+
+/** Every #tag used in notes, most used first. */
+export async function listTags(): Promise<string[]> {
+  const { rows } = await getDb().execute(
+    "SELECT note FROM expenses WHERE note LIKE '%#%'",
+  );
+  const counts = new Map<string, number>();
+  for (const r of rows) {
+    for (const tag of tagsIn(String(r.note))) {
+      counts.set(tag, (counts.get(tag) ?? 0) + 1);
+    }
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([t]) => t);
 }
 
 /** Every category used by at least one expense, most used first. */
@@ -560,21 +731,118 @@ export async function listUsedCategories(): Promise<string[]> {
   return rows.map(r => String(r.category));
 }
 
-/** Deletes the given expenses in one transaction. Returns rows removed. */
+const placeholders = (n: number) => Array(n).fill('?').join(',');
+
+/** SQLite caps bound parameters per statement, so long id lists go in chunks. */
+function chunks<T>(items: T[], size = 500): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    out.push(items.slice(i, i + size));
+  }
+  return out;
+}
+
+/**
+ * Moves the given expenses to the bin (deleted_expenses), where they can be restored for
+ * 30 days. Returns how many were removed.
+ */
 export async function deleteExpensesByIds(ids: number[]): Promise<number> {
   let removed = 0;
+  const now = Date.now();
   await getDb().transaction(async tx => {
-    // SQLite caps bound parameters per statement, so go in chunks.
-    for (let i = 0; i < ids.length; i += 500) {
-      const chunk = ids.slice(i, i + 500);
+    for (const chunk of chunks(ids)) {
+      const marks = placeholders(chunk.length);
+      await tx.execute(
+        `INSERT OR REPLACE INTO deleted_expenses (${EXPENSE_COLUMNS}, deleted_at)
+         SELECT ${EXPENSE_COLUMNS}, ? FROM expenses WHERE id IN (${marks})`,
+        [now, ...chunk],
+      );
       const result = await tx.execute(
-        `DELETE FROM expenses WHERE id IN (${chunk.map(() => '?').join(',')})`,
+        `DELETE FROM expenses WHERE id IN (${marks})`,
         chunk,
       );
       removed += result.rowsAffected;
     }
   });
   return removed;
+}
+
+/** Puts expenses from the bin back. Returns how many came back. */
+export async function restoreExpenses(ids: number[]): Promise<number> {
+  let restored = 0;
+  await getDb().transaction(async tx => {
+    for (const chunk of chunks(ids)) {
+      const marks = placeholders(chunk.length);
+      const result = await tx.execute(
+        `INSERT OR IGNORE INTO expenses (${EXPENSE_COLUMNS})
+         SELECT ${EXPENSE_COLUMNS} FROM deleted_expenses WHERE id IN (${marks})`,
+        chunk,
+      );
+      restored += result.rowsAffected;
+      await tx.execute(
+        `DELETE FROM deleted_expenses WHERE id IN (${marks})`,
+        chunk,
+      );
+    }
+  });
+  return restored;
+}
+
+export type DeletedExpense = Expense & { deleted_at: number };
+
+/** The bin, most recently deleted first. */
+export async function listDeletedExpenses(): Promise<DeletedExpense[]> {
+  const { rows } = await getDb().execute(
+    'SELECT * FROM deleted_expenses ORDER BY deleted_at DESC, created_at DESC',
+  );
+  return rows as unknown as DeletedExpense[];
+}
+
+/** Empties the bin for good: all of it, the given ids, or what's older than `olderThan` (ms). */
+export async function purgeDeletedExpenses(
+  opts: { ids?: number[]; olderThan?: number } = {},
+): Promise<number> {
+  const d = getDb();
+  let where = '';
+  let args: number[] = [];
+  if (opts.ids) {
+    if (opts.ids.length === 0) return 0;
+    where = `WHERE id IN (${placeholders(opts.ids.length)})`;
+    args = opts.ids;
+  } else if (opts.olderThan != null) {
+    where = 'WHERE deleted_at < ?';
+    args = [opts.olderThan];
+  }
+  let removed = 0;
+  await d.transaction(async tx => {
+    await tx.execute(
+      `DELETE FROM receipts WHERE expense_id IN (SELECT id FROM deleted_expenses ${where})`,
+      args,
+    );
+    const result = await tx.execute(
+      `DELETE FROM deleted_expenses ${where}`,
+      args,
+    );
+    removed = result.rowsAffected;
+  });
+  return removed;
+}
+
+/** Non-AED expenses still missing their AED value, by currency. */
+export async function listUnconvertedCurrencies(): Promise<string[]> {
+  const { rows } = await getDb().execute(
+    "SELECT DISTINCT currency FROM expenses WHERE currency != 'AED' AND aed_amount IS NULL",
+  );
+  return rows.map(r => String(r.currency));
+}
+
+/** Fills in the AED value for one currency, from `perAed` units of it per 1 AED. */
+export async function setAedAmounts(currency: string, perAed: number) {
+  if (!(perAed > 0)) return;
+  await getDb().execute(
+    'UPDATE expenses SET aed_amount = ROUND(amount / ?, 2) WHERE currency = ? AND aed_amount IS NULL',
+    [perAed, currency],
+  );
 }
 
 /** The oldest expense's time (unix ms), or null when there are none. */
@@ -596,6 +864,11 @@ export async function clearExpenses(range?: {
         [range.start, range.end],
       )
     : await getDb().execute('DELETE FROM expenses');
+  if (!range) {
+    // Everything means everything: the bin and receipt photos too.
+    await getDb().execute('DELETE FROM deleted_expenses');
+    await getDb().execute('DELETE FROM receipts');
+  }
   return result.rowsAffected;
 }
 

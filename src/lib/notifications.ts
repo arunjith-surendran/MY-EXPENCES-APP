@@ -16,6 +16,14 @@ export type TeamNotification = {
 type Native = {
   requestPermission: () => Promise<boolean>;
   show: (id: string, title: string, body: string) => Promise<void>;
+  /** Missing on builds before reminders existed. */
+  schedule?: (
+    id: string,
+    title: string,
+    body: string,
+    atMs: number,
+  ) => Promise<boolean>;
+  cancel?: (id: string) => Promise<void>;
 };
 
 // Missing on an old build without the native module: everything here becomes a no-op.
@@ -31,6 +39,25 @@ export const PAYMENTS_KEY = 'notify_payments';
 
 /** At most this many banners at once, so a long absence doesn't flood the lock screen. */
 const MAX_BANNERS = 3;
+
+/** A local notification now (budget alerts). Never throws. */
+export async function notifyNow(id: string, title: string, body: string) {
+  await native?.show(id, title, body).catch(() => {});
+}
+
+/** A local notification at `atMs` (recurring-payment reminders); the same id replaces it. */
+export async function scheduleNotification(
+  id: string,
+  title: string,
+  body: string,
+  atMs: number,
+) {
+  await native?.schedule?.(id, title, body, atMs).catch(() => false);
+}
+
+export async function cancelNotification(id: string) {
+  await native?.cancel?.(id).catch(() => {});
+}
 
 /** Asks for notification permission the first time only; iOS remembers the answer. */
 export async function askPermissionOnce() {

@@ -10,7 +10,12 @@ import {
 } from 'react';
 import { AppState } from 'react-native';
 
-import { getMeta, setMeta } from './db';
+import {
+  getMeta,
+  listUnconvertedCurrencies,
+  setAedAmounts,
+  setMeta,
+} from './db';
 
 /** AED → currency, e.g. { INR: 25.19 }, as of `updatedAt` (unix ms). */
 export type Rates = { updatedAt: number; rates: Record<string, number> };
@@ -133,6 +138,42 @@ async function download(): Promise<Rates | null> {
     }
   }
   return null;
+}
+
+/**
+ * Gives foreign-currency expenses (e.g. a USD Apple Pay tap abroad) their AED value, so
+ * they count in totals. Uses the cached rates, downloading fresh ones if they're old.
+ * Each expense keeps the rate from when it was first converted. Never throws.
+ */
+export async function convertForeignExpenses(): Promise<number> {
+  try {
+    const pending = await listUnconvertedCurrencies();
+    if (pending.length === 0) return 0;
+    let rates: Rates | null = null;
+    try {
+      const cached = await getMeta(RATES_KEY);
+      rates = cached ? (JSON.parse(cached) as Rates) : null;
+    } catch {}
+    if (isStale(rates)) {
+      const fresh = await download();
+      if (fresh) {
+        rates = fresh;
+        await setMeta(RATES_KEY, JSON.stringify(fresh)).catch(() => {});
+      }
+    }
+    if (!rates) return 0;
+    let converted = 0;
+    for (const code of pending) {
+      const perAed = rates.rates[code.toUpperCase()];
+      if (perAed) {
+        await setAedAmounts(code, perAed);
+        converted++;
+      }
+    }
+    return converted;
+  } catch {
+    return 0;
+  }
 }
 
 type Conversion = {

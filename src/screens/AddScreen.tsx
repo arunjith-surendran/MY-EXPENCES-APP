@@ -1,19 +1,32 @@
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useEffect, useRef, useState } from 'react';
 import {
+  ActionSheetIOS,
   Alert,
+  Image,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   View,
 } from 'react-native';
+import {
+  type ImagePickerResponse,
+  launchCamera,
+  launchImageLibrary,
+} from 'react-native-image-picker';
 
 import type { RootStackParamList } from '../../App';
 import Gradient from '../components/Gradient';
+import { useUndo } from '../components/UndoToast';
+import { checkBudgetAlerts } from '../lib/budgets';
+import { getReceipt, removeReceipt, setReceipt } from '../lib/receipts';
+import { addRecurring } from '../lib/recurring';
 import {
   deleteExpense,
   getExpense,
@@ -76,6 +89,16 @@ export default function AddScreen({ navigation, route }: Props) {
   const pickedCategory = useRef(false);
   const [newCategory, setNewCategory] = useState<string | null>(null);
   const [note, setNote] = useState('');
+  const { showUndo } = useUndo();
+  // Receipt photo (JPEG base64); `receiptChanged` says whether to save or remove it.
+  const [receipt, setReceiptData] = useState<string | null>(null);
+  const [receiptChanged, setReceiptChanged] = useState(false);
+  const [viewReceipt, setViewReceipt] = useState(false);
+  // Extra parts of a split payment; the rest of the amount stays in `category`.
+  const [splits, setSplits] = useState<{ amount: string; category: string }[]>(
+    [],
+  );
+  const [repeat, setRepeat] = useState(false);
   const [method, setMethod] = useState<PaymentMethod>(
     params.method === 'cash' ? 'cash' : 'card',
   );
@@ -114,6 +137,9 @@ export default function AddScreen({ navigation, route }: Props) {
       setMethod(e.method === 'cash' ? 'cash' : 'card');
       setDate(new Date(e.created_at));
     });
+    getReceipt(editId)
+      .then(setReceiptData)
+      .catch(() => {});
   }, [editId]);
 
   // Auto-save path for Apple Pay taps.
@@ -151,6 +177,7 @@ export default function AddScreen({ navigation, route }: Props) {
             source: 'apple_pay',
             note: params.raw?.trim() || null,
           });
+          checkBudgetAlerts();
           const saved = `Saved ${formatMoney(
             value,
             parseCurrency(params.amount),
@@ -233,6 +260,79 @@ export default function AddScreen({ navigation, route }: Props) {
     );
   };
 
+  const splitTotal = splits.reduce(
+    (sum, p) => sum + (parseAmount(p.amount) ?? 0),
+    0,
+  );
+
+  const pickReceipt = () => {
+    const options = {
+      mediaType: 'photo' as const,
+      maxWidth: 1400,
+      maxHeight: 1400,
+      quality: 0.6 as const,
+      includeBase64: true,
+    };
+    const done = (r: ImagePickerResponse) => {
+      if (r.errorMessage) {
+        Alert.alert('Could not add the photo', r.errorMessage);
+        return;
+      }
+      const data = r.assets?.[0]?.base64;
+      if (data) {
+        setReceiptData(data);
+        setReceiptChanged(true);
+      }
+    };
+    const from = (source: 'camera' | 'library') =>
+      source === 'camera'
+        ? launchCamera(options, done)
+        : launchImageLibrary({ ...options, selectionLimit: 1 }, done);
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          options: ['Take photo', 'Choose photo', 'Cancel'],
+          cancelButtonIndex: 2,
+        },
+        i => (i === 0 ? from('camera') : i === 1 && from('library')),
+      );
+    } else {
+      Alert.alert('Receipt photo', undefined, [
+        { text: 'Take photo', onPress: () => from('camera') },
+        { text: 'Choose photo', onPress: () => from('library') },
+        { text: 'Cancel', style: 'cancel' },
+      ]);
+    }
+  };
+
+  const dropReceipt = () => {
+    setReceiptData(null);
+    setReceiptChanged(true);
+  };
+
+  const pickSplitCategory = (index: number) => {
+    const options = categories.all;
+    const set = (c: string) =>
+      setSplits(prev =>
+        prev.map((p, i) => (i === index ? { ...p, category: c } : p)),
+      );
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        {
+          title: 'Category',
+          options: [...options, 'Cancel'],
+          cancelButtonIndex: options.length,
+        },
+        i => options[i] && set(options[i]),
+      );
+    } else {
+      Alert.alert('Category', undefined, [
+        ...options.map(c => ({ text: c, onPress: () => set(c) })),
+        { text: 'Cancel', style: 'cancel' as const },
+      ]);
+    }
+  };
+
   const save = async () => {
     const value = parseAmount(amount);
     if (value == null) {
@@ -243,10 +343,18 @@ export default function AddScreen({ navigation, route }: Props) {
       setStatus('That amount looks too large. Please check it.');
       return;
     }
+    const parts = splits
+      .map(p => ({ amount: parseAmount(p.amount), category: p.category }))
+      .filter((p): p is { amount: number; category: string } => !!p.amount);
+    const mainAmount = Math.round((value - splitTotal) * 100) / 100;
+    if (parts.length && mainAmount <= 0) {
+      setStatus('The split parts add up to more than the total.');
+      return;
+    }
     setSaving(true);
     try {
       const fields = {
-        amount: value,
+        amount: parts.length ? mainAmount : value,
         merchant: merchant.trim() || (method === 'cash' ? 'Cash' : 'Card'),
         category,
         note: note.trim() || null,
@@ -254,16 +362,46 @@ export default function AddScreen({ navigation, route }: Props) {
         method,
       };
       await rememberCategory(merchant, category).catch(() => {});
+      let id = editId;
       if (editId) {
         await updateExpense(editId, fields);
       } else {
-        await insertExpense({
-          ...fields,
+        const shared = {
           currency: params.auto === '1' ? parseCurrency(params.amount) : 'AED',
           card: params.card?.trim() || null,
-          source: params.auto === '1' ? 'apple_pay' : 'manual',
-        });
+          source: (params.auto === '1' ? 'apple_pay' : 'manual') as
+            | 'apple_pay'
+            | 'manual',
+        };
+        id = await insertExpense({ ...fields, ...shared });
+        for (const p of parts) {
+          await insertExpense({
+            ...fields,
+            ...shared,
+            amount: p.amount,
+            category: p.category,
+            note: [fields.note, `Split of ${formatMoney(value)}`]
+              .filter(Boolean)
+              .join(' · '),
+          });
+        }
+        if (repeat) {
+          await addRecurring({
+            amount: value,
+            merchant: fields.merchant,
+            category,
+            method,
+            note: fields.note,
+            day: date.getDate(),
+            after: date.getTime(),
+          });
+        }
       }
+      if (id && receiptChanged) {
+        if (receipt) await setReceipt(id, receipt);
+        else await removeReceipt(id);
+      }
+      checkBudgetAlerts();
       leave();
     } catch (err) {
       setStatus(`Couldn't save: ${String(err)}`);
@@ -273,12 +411,19 @@ export default function AddScreen({ navigation, route }: Props) {
 
   const remove = () => {
     if (!editId) return;
-    Alert.alert('Delete expense?', 'This cannot be undone.', [
+    Alert.alert('Delete expense?', 'It goes to Recently deleted for 30 days.', [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Delete',
         style: 'destructive',
-        onPress: () => deleteExpense(editId).then(leave),
+        onPress: async () => {
+          await deleteExpense(editId);
+          showUndo({
+            message: `${merchant || 'Expense'} deleted`,
+            ids: [editId],
+          });
+          leave();
+        },
       },
     ]);
   };
@@ -512,10 +657,144 @@ export default function AddScreen({ navigation, route }: Props) {
           style={input}
           value={note}
           onChangeText={setNote}
-          placeholder="Optional"
+          placeholder="Optional · add #tags like #trip"
           placeholderTextColor={t.muted}
           maxLength={200}
         />
+
+        <Text style={[styles.label, { color: t.muted }]}>Receipt</Text>
+        {receipt ? (
+          <View style={styles.receiptRow}>
+            <Pressable onPress={() => setViewReceipt(true)}>
+              <Image
+                source={{ uri: `data:image/jpeg;base64,${receipt}` }}
+                style={[styles.receiptThumb, { borderColor: t.border }]}
+              />
+            </Pressable>
+            <View style={styles.receiptActions}>
+              <Pressable onPress={pickReceipt} hitSlop={8}>
+                <Text style={[styles.bold, { color: t.accent }]}>Replace</Text>
+              </Pressable>
+              <Pressable onPress={dropReceipt} hitSlop={8}>
+                <Text style={[styles.bold, { color: t.danger }]}>Remove</Text>
+              </Pressable>
+            </View>
+          </View>
+        ) : (
+          <Pressable
+            onPress={pickReceipt}
+            style={[
+              styles.chip,
+              styles.dashed,
+              styles.attach,
+              { borderColor: t.accent },
+            ]}
+          >
+            <Text style={[styles.bold, { color: t.accent }]}>
+              📎 Add receipt photo
+            </Text>
+          </Pressable>
+        )}
+
+        {!editId && params.auto !== '1' && (
+          <>
+            <Text style={[styles.label, { color: t.muted }]}>Split</Text>
+            {splits.map((p, i) => {
+              const cs = categoryStyle(p.category, t);
+              return (
+                <View key={i} style={styles.newRow}>
+                  <TextInput
+                    style={[input, styles.splitAmount]}
+                    value={p.amount}
+                    onChangeText={v =>
+                      setSplits(prev =>
+                        prev.map((x, j) => (j === i ? { ...x, amount: v } : x)),
+                      )
+                    }
+                    keyboardType="decimal-pad"
+                    placeholder="0.00"
+                    placeholderTextColor={t.muted}
+                  />
+                  <Pressable
+                    onPress={() => pickSplitCategory(i)}
+                    style={[
+                      styles.chip,
+                      styles.flex,
+                      { borderColor: cs.color },
+                    ]}
+                  >
+                    <Text numberOfLines={1} style={{ color: cs.color }}>
+                      {p.category} ▾
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() =>
+                      setSplits(prev => prev.filter((_, j) => j !== i))
+                    }
+                    hitSlop={8}
+                  >
+                    <Text style={{ color: t.muted }}>✕</Text>
+                  </Pressable>
+                </View>
+              );
+            })}
+            {splits.length > 0 && (
+              <Text
+                style={[
+                  styles.hint,
+                  {
+                    color:
+                      (parseAmount(amount) ?? 0) - splitTotal <= 0
+                        ? t.danger
+                        : t.muted,
+                  },
+                ]}
+              >
+                {category} keeps{' '}
+                {formatMoney(
+                  Math.max(0, (parseAmount(amount) ?? 0) - splitTotal),
+                )}
+                . Each part is saved as its own expense.
+              </Text>
+            )}
+            <Pressable
+              onPress={() =>
+                setSplits(prev => [
+                  ...prev,
+                  {
+                    amount: '',
+                    category:
+                      category === 'Groceries' ? 'Shopping' : 'Groceries',
+                  },
+                ])
+              }
+              style={[
+                styles.chip,
+                styles.dashed,
+                styles.attach,
+                { borderColor: t.border },
+              ]}
+            >
+              <Text style={[styles.bold, { color: t.text }]}>
+                ➗{' '}
+                {splits.length ? 'Add another part' : 'Split across categories'}
+              </Text>
+            </Pressable>
+
+            <View style={styles.repeatRow}>
+              <View style={styles.flex}>
+                <Text style={[styles.bold, { color: t.text }]}>
+                  Repeat every month
+                </Text>
+                <Text style={[styles.hint, { color: t.muted }]}>
+                  Added by itself on day {date.getDate()} of each month, with a
+                  reminder the day before.
+                </Text>
+              </View>
+              <Switch value={repeat} onValueChange={setRepeat} />
+            </View>
+          </>
+        )}
 
         <Pressable
           onPress={save}
@@ -546,6 +825,23 @@ export default function AddScreen({ navigation, route }: Props) {
           </Pressable>
         )}
       </ScrollView>
+      <Modal
+        visible={viewReceipt && !!receipt}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setViewReceipt(false)}
+      >
+        <Pressable style={styles.viewer} onPress={() => setViewReceipt(false)}>
+          {receipt && (
+            <Image
+              source={{ uri: `data:image/jpeg;base64,${receipt}` }}
+              style={styles.viewerImage}
+              resizeMode="contain"
+            />
+          )}
+          <Text style={styles.viewerHint}>Tap to close</Text>
+        </Pressable>
+      </Modal>
     </KeyboardAvoidingView>
   );
 }
@@ -631,6 +927,30 @@ const styles = StyleSheet.create({
   newRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   addBtn: { paddingHorizontal: 16, paddingVertical: 12, borderRadius: 12 },
   hint: { fontSize: 12, marginTop: -4 },
+  attach: {
+    alignSelf: 'flex-start',
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+  },
+  receiptRow: { flexDirection: 'row', alignItems: 'center', gap: 16 },
+  receiptThumb: { width: 84, height: 84, borderRadius: 12, borderWidth: 1 },
+  receiptActions: { gap: 12 },
+  splitAmount: { width: 110 },
+  repeatRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginTop: 4,
+  },
+  viewer: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.92)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 16,
+  },
+  viewerImage: { width: '100%', height: '85%' },
+  viewerHint: { color: '#FFFFFF', marginTop: 12, opacity: 0.8 },
   dimmed: { opacity: 0.6 },
   buttonText: { fontWeight: '800', fontSize: 16 },
 });

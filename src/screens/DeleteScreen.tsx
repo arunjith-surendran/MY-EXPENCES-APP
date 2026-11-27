@@ -13,6 +13,7 @@ import {
 import type { RootStackParamList } from '../../App';
 import {
   deleteExpensesByIds,
+  sumAed,
   type Expense,
   firstExpenseAt,
   listExpenses,
@@ -20,6 +21,7 @@ import {
   type MonthSummary,
 } from '../lib/db';
 import { Chip, DayStepper } from '../components/FilterControls';
+import { useUndo } from '../components/UndoToast';
 import { monthKey, monthLabel } from '../lib/months';
 import { formatMoney } from '../lib/parse';
 import {
@@ -40,8 +42,9 @@ type Method = 'any' | 'card' | 'cash';
  * Delete expenses in bulk: pick a period (day, week, month, any month, a date range or
  * everything), narrow it by category or card/cash, untick any to keep, then delete.
  */
-export default function DeleteScreen({ navigation, route }: Props) {
+export default function DeleteScreen({ route }: Props) {
   const t = useTheme();
+  const { showUndo } = useUndo();
   const presetMonth = route.params?.month;
   const [period, setPeriod] = useState<Period>(
     presetMonth ? 'month' : 'thisMonth',
@@ -101,9 +104,7 @@ export default function DeleteScreen({ navigation, route }: Props) {
     [items, method, category],
   );
   const chosen = matching.filter(e => !kept.has(e.id));
-  const chosenTotal = chosen
-    .filter(e => e.currency === 'AED')
-    .reduce((s, e) => s + e.amount, 0);
+  const chosenTotal = sumAed(chosen);
 
   const toggle = (id: number) =>
     setKept(prev => {
@@ -126,7 +127,7 @@ export default function DeleteScreen({ navigation, route }: Props) {
       `Delete ${chosen.length} expense${chosen.length === 1 ? '' : 's'}?`,
       `${whole ? 'Everything' : 'The ticked expenses'} from ${periodText}${
         chosenTotal > 0 ? ` (${formatMoney(chosenTotal)})` : ''
-      } will be permanently deleted from this phone. This can't be undone.`,
+      } will be deleted. You can undo it, or restore them from Recently deleted for 30 days.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -135,16 +136,14 @@ export default function DeleteScreen({ navigation, route }: Props) {
           onPress: async () => {
             setBusy(true);
             try {
-              const removed = await deleteExpensesByIds(chosen.map(e => e.id));
+              const ids = chosen.map(e => e.id);
+              const removed = await deleteExpensesByIds(ids);
               load();
-              Alert.alert(
-                'Deleted',
-                `${removed} expense${removed === 1 ? '' : 's'} deleted.`,
-                [
-                  { text: 'Delete more', style: 'cancel' },
-                  { text: 'Done', onPress: () => navigation.goBack() },
-                ],
-              );
+              showUndo({
+                message: `${removed} expense${removed === 1 ? '' : 's'} deleted`,
+                ids,
+                onUndone: load,
+              });
             } catch (err) {
               Alert.alert("Couldn't delete", String(err));
             } finally {
