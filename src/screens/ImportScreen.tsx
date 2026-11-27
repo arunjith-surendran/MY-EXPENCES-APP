@@ -32,7 +32,12 @@ import {
   useCategories,
 } from '../lib/categories';
 import { formatMoney, guessCategory } from '../lib/parse';
-import { isSalary, parseStatement, type StatementTxn } from '../lib/statement';
+import {
+  isSalary,
+  parseStatement,
+  repairOcrText,
+  type StatementTxn,
+} from '../lib/statement';
 import { categoryStyle, glow, useTheme } from '../lib/theme';
 import { useTrackFeature } from '../lib/usage';
 
@@ -45,6 +50,8 @@ const Importer = NativeModules.StatementImporter as {
   extractText(path: string, password: string | null): Promise<string>;
   /** PDFKit's own text order; missing on builds before the layout reader. */
   extractRawText?(path: string, password: string | null): Promise<string>;
+  /** Reads the rendered pages with on-device OCR; missing on older builds. */
+  extractOcrText?(path: string, password: string | null): Promise<string>;
 };
 
 type Row = StatementTxn & { key: string; duplicate: boolean };
@@ -145,6 +152,23 @@ export default function ImportScreen({ navigation, route }: Props) {
           txns = parseStatement(raw);
           if (txns.length === 0)
             text = `${text}\n\n----- PDF order -----\n\n${raw}`;
+        }
+      }
+      // Some banks draw the statement's text as shapes (only a few Arabic lines are real
+      // text): read the pages themselves, on the phone.
+      if (
+        txns.length === 0 &&
+        Importer.extractOcrText &&
+        /\.pdf$/i.test(picked.name)
+      ) {
+        setBusy('Reading the pages…');
+        const seen = await Importer.extractOcrText(picked.path, password).catch(
+          () => null,
+        );
+        if (seen) {
+          txns = parseStatement(repairOcrText(seen));
+          if (txns.length === 0)
+            text = `${text}\n\n----- Read from the pages -----\n\n${seen}`;
         }
       }
       if (txns.length === 0) {

@@ -1,4 +1,9 @@
-import { cleanMerchant, isSalary, parseStatement } from '../src/lib/statement';
+import {
+  cleanMerchant,
+  isSalary,
+  parseStatement,
+  repairOcrText,
+} from '../src/lib/statement';
 
 const day = (t: { date: number }) => new Date(t.date).getDate();
 
@@ -189,5 +194,35 @@ describe('Arabic month names', () => {
     const txns = parseStatement('03 نوفمبر 2026   مطعم البيك   38.00');
     expect(txns).toHaveLength(1);
     expect(new Date(txns[0].date).getMonth()).toBe(10);
+  });
+});
+
+describe('OCR text from statements drawn as shapes (Emirates NBD style)', () => {
+  // Made-up rows with the mistakes OCR really makes on these statements: junk after the
+  // year, a dropped month digit or slash, "4,.000.00", and a card's own date and amount
+  // run together or wrapped onto a line of their own.
+  const ocr = [
+    'Emirates NBD   Statement of Account',
+    '01-11-2026 to 27-11-2026   Statement Date: 27/11/2026   Statement period',
+    'Date   Details   Debit   Credit   Balance',
+    '31/10/202ł   BROUGHTFORWARD   1,000.00 Cr',
+    '01/11/2026   CARD NO.411111XXXXXX1111 SAMPLE MINI MART DUBAI:AE 123456   30-10-20266.50,AED   6.50   993.50 Cr',
+    '01/1/202ł   MOBILE BANKING TRANSFER FROM JOHN SAMPLE AE111   222333444555666777 RefNo:-ABC123DEF456   4,.000.00   4,993.50 Cr',
+    '02/11/202ćł   MOBILE BANKING TRANSFERTO AE000000000000000000000   RefNo:-ZZZ999   1,000.00   3,993.50 Cąłą',
+    '0211/2026   CARD NO.411111XXXXXX1111 SAMPLE CAFE LLC DUBAI:AE 654321   20.00   3,973.50 Cr',
+    '03/11/2026   CARD NO.411111XXXXXX1111 Digital Dubai DUBAI:AE 777 01-11-   202620.00,AED   20.00   3,953.50 Cr',
+    '18-11-2026 27.00,AED',
+  ].join('\n');
+
+  it('repairs the text and reads every row', () => {
+    const txns = parseStatement(repairOcrText(ocr));
+    expect(txns.map(t => [day(t), t.kind, t.amount, t.merchant])).toEqual([
+      [1, 'debit', 6.5, 'Sample Mini Mart'],
+      [1, 'credit', 4000, 'Transfer from John Sample'],
+      [2, 'debit', 1000, 'Bank transfer'],
+      [2, 'debit', 20, 'Sample Cafe Llc'],
+      [3, 'debit', 20, 'Digital Dubai'],
+    ]);
+    expect(new Date(txns[1].date).getMonth()).toBe(10); // "01/1/" was November
   });
 });

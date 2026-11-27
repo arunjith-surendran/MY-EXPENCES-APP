@@ -2,6 +2,7 @@
 #import <CommonCrypto/CommonKeyDerivation.h>
 #import <PDFKit/PDFKit.h>
 #import "StatementLayout.h"
+#import "StatementOcr.h"
 #import <Security/Security.h>
 #import <React/RCTBridgeModule.h>
 #import <React/RCTUtils.h>
@@ -16,6 +17,8 @@
  *   extractText(path, pass?)  -> text; rejects with code "PASSWORD" if the PDF is locked
  *                                 and no (or a wrong) password was given.
  *   extractRawText(path, pass?) -> the PDF's text in PDFKit's own order (the old reader, a fallback)
+ *   extractOcrText(path, pass?) -> the text read from the rendered pages (for PDFs whose text is
+ *                                 drawn as shapes, e.g. Emirates NBD e-statements)
  *   pickBackup()              -> { name, path } of a .json backup, or null if cancelled
  *   writeFile(name, text)     -> path of a new file with that text in the temp folder
  *   encrypt(text, password)   -> { salt, iv, data, mac, iter } (base64), AES-256-CBC + HMAC-SHA256
@@ -225,6 +228,34 @@ RCT_EXPORT_METHOD(extractText
                   : (RCTPromiseRejectBlock)reject)
 {
   [self readPath:path password:password layout:YES resolve:resolve reject:reject];
+}
+
+RCT_EXPORT_METHOD(extractOcrText
+                  : (NSString *)path password
+                  : (NSString *)password resolve
+                  : (RCTPromiseResolveBlock)resolve reject
+                  : (RCTPromiseRejectBlock)reject)
+{
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    PDFDocument *doc = [[PDFDocument alloc] initWithURL:[NSURL fileURLWithPath:path]];
+    if (doc == nil) {
+      reject(@"READ", @"Couldn't open this PDF.", nil);
+      return;
+    }
+    if (doc.isLocked && (password.length == 0 || ![doc unlockWithPassword:password])) {
+      reject(@"PASSWORD", @"This PDF needs a password.", nil);
+      return;
+    }
+    NSMutableString *text = [NSMutableString string];
+    // Bank statements are a few pages; a cap keeps a huge PDF from running for minutes.
+    for (NSInteger i = 0; i < MIN(doc.pageCount, 60); i++) {
+      @autoreleasepool {
+        [text appendString:StatementOcrPage([doc pageAtIndex:i])];
+        [text appendString:@"\n"];
+      }
+    }
+    resolve(text);
+  });
 }
 
 RCT_EXPORT_METHOD(extractRawText
