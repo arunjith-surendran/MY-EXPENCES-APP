@@ -1,13 +1,21 @@
 import { useFocusEffect } from '@react-navigation/native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useState,
+} from 'react';
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   Pressable,
   StyleSheet,
   Text,
   TextInput,
+  Share,
   View,
 } from 'react-native';
 import Svg, { Circle, Path } from 'react-native-svg';
@@ -22,6 +30,7 @@ import {
   listUsedCategories,
   type MonthSummary,
   searchExpenses,
+  toCsv,
 } from '../lib/db';
 import { monthKey, monthLabel } from '../lib/months';
 import { formatMoney, parseAmount } from '../lib/parse';
@@ -153,6 +162,48 @@ export default function SearchScreen({ navigation, route }: Props) {
     else next.add(value);
     return next;
   };
+
+  const exportCsv = useCallback(async () => {
+    if (!results || results.length === 0) {
+      Alert.alert('Nothing to export', 'No expenses match this search.');
+      return;
+    }
+    const what = [
+      query.trim() && `"${query.trim()}"`,
+      periodLabel(period, range),
+    ]
+      .filter(Boolean)
+      .join(' · ');
+    try {
+      await Share.share({
+        title: `Expenses · ${what}`,
+        message: toCsv(results),
+      });
+    } catch (err) {
+      Alert.alert("Couldn't export", String(err));
+    }
+  }, [results, query, period, range]);
+
+  // Export what's on screen: the current search, filters and sort order.
+  useLayoutEffect(() => {
+    navigation.setOptions({
+      // React Navigation's documented pattern for header buttons.
+      // eslint-disable-next-line react/no-unstable-nested-components
+      headerRight: () => (
+        <Pressable
+          onPress={exportCsv}
+          disabled={!results?.length}
+          hitSlop={12}
+          accessibilityRole="button"
+          accessibilityLabel={`Export ${results?.length ?? 0} results as CSV`}
+          style={[styles.exportBtn, !results?.length && styles.dimmed]}
+        >
+          <ShareIcon color={t.accent} />
+          <Text style={[styles.bold, { color: t.accent }]}>Export</Text>
+        </Pressable>
+      ),
+    });
+  }, [navigation, exportCsv, results, t.accent]);
 
   const total = (results ?? [])
     .filter(e => e.currency === 'AED')
@@ -472,6 +523,21 @@ function SearchIcon({ color }: { color: string }) {
   );
 }
 
+function ShareIcon({ color }: { color: string }) {
+  return (
+    <Svg width={18} height={18} viewBox="0 0 24 24">
+      <Path
+        d="M12 15V3m0 0L7.5 7.5M12 3l4.5 4.5M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"
+        stroke={color}
+        strokeWidth={2.2}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+      />
+    </Svg>
+  );
+}
+
 function FilterIcon({ color }: { color: string }) {
   return (
     <Svg width={16} height={16} viewBox="0 0 24 24">
@@ -561,6 +627,8 @@ const styles = StyleSheet.create({
   },
   iconText: { fontSize: 12, fontWeight: '900' },
   bold: { fontWeight: '700' },
+  exportBtn: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  dimmed: { opacity: 0.4 },
   meta: { fontSize: 12, marginTop: 3 },
   amountCol: { alignItems: 'flex-end', gap: 2 },
   amount: { fontWeight: '800', fontSize: 15 },
