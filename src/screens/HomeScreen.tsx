@@ -25,13 +25,14 @@ import BudgetCard from '../components/BudgetCard';
 import Gradient from '../components/Gradient';
 import HealthCard from '../components/HealthCard';
 import LifestyleChart from '../components/LifestyleChart';
+import PatternsChart from '../components/PatternsChart';
 import ProLock from '../components/ProLock';
 import {
-  clearExpenses,
   getMeta,
   getAutoLogSince,
   getSalaryInfo,
   listAutoLogCards,
+  listDayTotals,
   listExpenses,
   listMonthCategoryTotals,
   listMonthSummaries,
@@ -41,12 +42,20 @@ import {
   type SalaryInfo,
   toCsv,
 } from '../lib/db';
-import { monthKey, monthLabel, shiftMonth, startOfToday } from '../lib/months';
+import {
+  monthKey,
+  monthLabel,
+  monthRange,
+  shiftMonth,
+  startOfToday,
+} from '../lib/months';
 import {
   activeMonths,
   assessMonth,
+  dailySeries,
   groupByMonth,
   type GroupTotals,
+  weekdayAverages,
 } from '../lib/insights';
 import { useConversion } from '../lib/currency';
 import {
@@ -96,6 +105,9 @@ export default function HomeScreen({ navigation }: Props) {
   const offer = useCurrentOffer();
   const now = useNow(60_000);
   const [summaries, setSummaries] = useState<MonthSummary[]>([]);
+  const [dayTotals, setDayTotals] = useState<Map<string, number>>(
+    () => new Map(),
+  );
   const [categoryTotals, setCategoryTotals] = useState<MonthCategoryTotal[]>(
     [],
   );
@@ -112,6 +124,13 @@ export default function HomeScreen({ navigation }: Props) {
       .then(setCategoryTotals)
       .catch(() => {});
     const today = startOfToday();
+    // This month day by day, and 12 weeks back for the weekday pattern.
+    listDayTotals(
+      Math.min(monthRange(monthKey()).start, today - 83 * DAY_MS),
+      today + DAY_MS,
+    )
+      .then(setDayTotals)
+      .catch(() => {});
     listExpenses(today, today + DAY_MS)
       .then(rows =>
         setTodayTotal(
@@ -231,6 +250,34 @@ export default function HomeScreen({ navigation }: Props) {
     });
   }, [stats, groups, current, salaryOf]);
 
+  const patterns = useMemo(() => {
+    const today = new Date();
+    const first = stats.months[stats.months.length - 1]?.month ?? current;
+    const pay = salaryOf(current);
+    const daysInMonth = new Date(
+      today.getFullYear(),
+      today.getMonth() + 1,
+      0,
+    ).getDate();
+    const daysLeft = daysInMonth - today.getDate() + 1;
+    return {
+      daily: dailySeries(dayTotals, current, today),
+      weekdays: weekdayAverages(
+        dayTotals,
+        today,
+        new Date(monthRange(first).start),
+      ),
+      monthly: stats.chartMonths.map(m => ({
+        month: m,
+        total: summaries.find(x => x.month === m)?.total ?? 0,
+      })),
+      safePerDay:
+        pay != null && pay > 0
+          ? Math.max(pay - stats.thisMonth.total, 0) / daysLeft
+          : null,
+    };
+  }, [dayTotals, stats, summaries, current, salaryOf]);
+
   const openMonth = useCallback(
     (month: string) => navigation.navigate('Month', { month }),
     [navigation],
@@ -244,25 +291,6 @@ export default function HomeScreen({ navigation }: Props) {
     }
     await Share.share({ title: 'All expenses', message: toCsv(rows) });
   }, []);
-
-  const confirmClearAll = useCallback(() => {
-    Alert.alert(
-      'Clear all history?',
-      'Every expense in every month will be permanently deleted. This cannot be undone.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            const removed = await clearExpenses();
-            load();
-            Alert.alert('Cleared', `${removed} expense(s) deleted.`);
-          },
-        },
-      ],
-    );
-  }, [load]);
 
   const chooseAppearance = useCallback(() => {
     const modes: [ThemeMode, string][] = [
@@ -300,7 +328,7 @@ export default function HomeScreen({ navigation }: Props) {
       ['Salary', () => navigation.navigate('Salary', { month: current })],
       ['Apple Pay auto-logging', () => navigation.navigate('Setup')],
       ['Appearance (light / dark)', chooseAppearance],
-      ['Clear all history', confirmClearAll],
+      ['Delete expenses…', () => navigation.navigate('Delete')],
     ];
     if (Platform.OS === 'ios') {
       ActionSheetIOS.showActionSheetWithOptions(
@@ -317,7 +345,7 @@ export default function HomeScreen({ navigation }: Props) {
         { text: 'Cancel', style: 'cancel' as const },
       ]);
     }
-  }, [chooseAppearance, confirmClearAll, current, exportAll, navigation]);
+  }, [chooseAppearance, current, exportAll, navigation]);
 
   useLayoutEffect(() => {
     navigation.setOptions({
@@ -576,6 +604,26 @@ export default function HomeScreen({ navigation }: Props) {
 
             {hasPro ? (
               <>
+                <View
+                  style={[
+                    styles.card,
+                    { backgroundColor: t.card, borderColor: t.border },
+                    cardShadow(t),
+                  ]}
+                >
+                  <Text style={[styles.label, { color: t.muted }]}>
+                    Spending patterns
+                  </Text>
+                  <PatternsChart
+                    daily={patterns.daily}
+                    dailyMonth={current}
+                    safePerDay={patterns.safePerDay}
+                    months={patterns.monthly}
+                    weekdays={patterns.weekdays}
+                    onOpenMonth={openMonth}
+                  />
+                </View>
+
                 <View
                   style={[
                     styles.card,

@@ -29,8 +29,7 @@ import ProLock from '../components/ProLock';
 import DailyChart from '../components/DailyChart';
 import Gradient from '../components/Gradient';
 import {
-  clearExpenses,
-  deleteExpense,
+  deleteExpensesByIds,
   getSalaryInfo,
   salaryFor,
   type Expense,
@@ -68,6 +67,8 @@ export default function MonthScreen({ route }: Props) {
   const month = route.name === 'Month' ? route.params.month : monthKey();
   const isCurrentMonth = month === monthKey();
   const [items, setItems] = useState<Expense[]>([]);
+  // Select mode (hold an expense, or "Select expenses" in the menu): ids ticked for deleting.
+  const [selected, setSelected] = useState<Set<number> | null>(null);
   const [salary, setSalary] = useState<number | null>(null);
 
   const load = useCallback(() => {
@@ -166,40 +167,37 @@ export default function MonthScreen({ route }: Props) {
     return out;
   }, [items]);
 
-  const confirmDelete = (e: Expense) =>
-    Alert.alert(
-      'Delete expense?',
-      `${e.merchant} · ${formatMoney(e.amount, e.currency)}`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: () => deleteExpense(e.id).then(load),
-        },
-      ],
-    );
+  const toggleSelected = (id: number) =>
+    setSelected(prev => {
+      const next = new Set(prev ?? []);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
 
-  const confirmClear = useCallback(() => {
+  const deleteSelected = useCallback(() => {
+    if (!selected || selected.size === 0) return;
+    const chosen = items.filter(e => selected.has(e.id));
+    const total = chosen
+      .filter(e => e.currency === 'AED')
+      .reduce((sum, e) => sum + e.amount, 0);
     Alert.alert(
-      `Clear ${monthLabel(month)}?`,
-      `All ${items.length} expense(s) in ${monthLabel(
-        month,
-      )} will be permanently deleted.`,
+      `Delete ${chosen.length} expense${chosen.length === 1 ? '' : 's'}?`,
+      `${formatMoney(total)} in total. This can't be undone.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Delete',
           style: 'destructive',
           onPress: async () => {
-            const removed = await clearExpenses(monthRange(month));
+            await deleteExpensesByIds(chosen.map(e => e.id)).catch(() => 0);
+            setSelected(null);
             load();
-            Alert.alert('Cleared', `${removed} expense(s) deleted.`);
           },
         },
       ],
     );
-  }, [items.length, load, month]);
+  }, [items, load, selected]);
 
   const exportCsv = useCallback(async () => {
     if (items.length === 0) {
@@ -216,13 +214,14 @@ export default function MonthScreen({ route }: Props) {
         () => navigation.navigate('Import', { month }),
       ],
       ['Export this month (CSV)', exportCsv],
-      ['Clear this month', confirmClear],
+      ['Select expenses', () => setSelected(new Set())],
+      ['Delete expenses…', () => navigation.navigate('Delete', { month })],
     ];
     if (Platform.OS === 'ios') {
       ActionSheetIOS.showActionSheetWithOptions(
         {
           options: [...actions.map(a => a[0]), 'Cancel'],
-          destructiveButtonIndex: 2,
+          destructiveButtonIndex: 3,
           cancelButtonIndex: actions.length,
         },
         i => actions[i]?.[1](),
@@ -231,15 +230,48 @@ export default function MonthScreen({ route }: Props) {
       Alert.alert('Options', undefined, [
         { text: actions[0][0], onPress: actions[0][1] },
         { text: actions[1][0], onPress: actions[1][1] },
-        { text: actions[2][0], style: 'destructive', onPress: actions[2][1] },
+        { text: actions[2][0], onPress: actions[2][1] },
+        { text: actions[3][0], style: 'destructive', onPress: actions[3][1] },
         { text: 'Cancel', style: 'cancel' },
       ]);
     }
-  }, [confirmClear, exportCsv, month, navigation]);
+  }, [exportCsv, month, navigation]);
+
+  const selecting = selected != null;
+  const allSelected =
+    selecting && items.length > 0 && selected.size === items.length;
 
   useLayoutEffect(() => {
+    if (selecting) {
+      navigation.setOptions({
+        title: selected.size ? `${selected.size} selected` : 'Select expenses',
+        // eslint-disable-next-line react/no-unstable-nested-components
+        headerLeft: () => (
+          <Pressable onPress={() => setSelected(null)} hitSlop={12}>
+            <Text style={[styles.headerBtn, { color: t.accent }]}>Cancel</Text>
+          </Pressable>
+        ),
+        // eslint-disable-next-line react/no-unstable-nested-components
+        headerRight: () => (
+          <Pressable
+            onPress={() =>
+              setSelected(
+                allSelected ? new Set() : new Set(items.map(e => e.id)),
+              )
+            }
+            hitSlop={12}
+          >
+            <Text style={[styles.headerBtn, { color: t.accent }]}>
+              {allSelected ? 'Select none' : 'Select all'}
+            </Text>
+          </Pressable>
+        ),
+      });
+      return;
+    }
     navigation.setOptions({
       title: monthLabel(month),
+      headerLeft: undefined,
       // React Navigation's documented pattern for header buttons.
       // eslint-disable-next-line react/no-unstable-nested-components
       headerRight: () => (
@@ -252,7 +284,19 @@ export default function MonthScreen({ route }: Props) {
         </Pressable>
       ),
     });
-  }, [navigation, openMenu, month, t.accent]);
+  }, [
+    navigation,
+    openMenu,
+    month,
+    t.accent,
+    selecting,
+    selected,
+    allSelected,
+    items,
+  ]);
+
+  // Leaving the month (or switching it) ends select mode.
+  useEffect(() => setSelected(null), [month]);
 
   return (
     <View style={[styles.flex, { backgroundColor: t.bg }]}>
@@ -456,16 +500,41 @@ export default function MonthScreen({ route }: Props) {
         )}
         renderItem={({ item: e }) => {
           const c = categoryStyle(e.category, t);
+          const ticked = selected?.has(e.id) ?? false;
           return (
             <Pressable
-              onPress={() => navigation.navigate('Add', { id: String(e.id) })}
-              onLongPress={() => confirmDelete(e)}
+              onPress={() =>
+                selecting
+                  ? toggleSelected(e.id)
+                  : navigation.navigate('Add', { id: String(e.id) })
+              }
+              onLongPress={() => toggleSelected(e.id)}
+              accessibilityState={selecting ? { checked: ticked } : undefined}
               style={[
                 styles.item,
-                { backgroundColor: t.card, borderColor: t.border },
+                {
+                  backgroundColor: t.card,
+                  borderColor: ticked ? t.danger : t.border,
+                },
+                ticked && styles.itemTicked,
                 cardShadow(t),
               ]}
             >
+              {selecting && (
+                <View
+                  style={[
+                    styles.check,
+                    { borderColor: ticked ? t.danger : t.border },
+                    ticked && { backgroundColor: t.danger },
+                  ]}
+                >
+                  {ticked && (
+                    <Text style={[styles.checkMark, { color: t.onAccent }]}>
+                      ✓
+                    </Text>
+                  )}
+                </View>
+              )}
               <View
                 style={[
                   styles.icon,
@@ -517,8 +586,36 @@ export default function MonthScreen({ route }: Props) {
         }}
       />
 
+      {selecting && (
+        <View
+          style={[
+            styles.selectBar,
+            { backgroundColor: t.bg, borderTopColor: t.border },
+          ]}
+        >
+          <Pressable
+            onPress={deleteSelected}
+            disabled={selected.size === 0}
+            accessibilityRole="button"
+            style={[
+              styles.deleteBtn,
+              { backgroundColor: t.danger },
+              selected.size === 0 && styles.dimmed,
+            ]}
+          >
+            <Text style={[styles.fabText, { color: t.onAccent }]}>
+              {selected.size === 0
+                ? 'Tap expenses to select'
+                : `Delete ${selected.size} expense${
+                    selected.size === 1 ? '' : 's'
+                  }`}
+            </Text>
+          </Pressable>
+        </View>
+      )}
+
       {/* As a tab, the tab bar's "+" adds instead. */}
-      {!isTab && (
+      {!isTab && !selecting && (
         <Pressable
           onPress={() => navigation.navigate('Add', { month })}
           style={[styles.fab, glow(t.gradients.hero[1], 20)]}
@@ -711,4 +808,18 @@ const styles = StyleSheet.create({
     borderRadius: FAB_RADIUS,
   },
   fabText: { fontWeight: '800', fontSize: 17 },
+  headerBtn: { fontSize: 16, fontWeight: '600' },
+  itemTicked: { borderWidth: 1.5 },
+  check: {
+    width: 24,
+    height: 24,
+    borderRadius: 7,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  checkMark: { fontSize: 15, fontWeight: '900', marginTop: -1 },
+  selectBar: { padding: 16, borderTopWidth: StyleSheet.hairlineWidth },
+  deleteBtn: { padding: 16, borderRadius: 14, alignItems: 'center' },
+  dimmed: { opacity: 0.5 },
 });

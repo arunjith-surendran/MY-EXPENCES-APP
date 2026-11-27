@@ -36,7 +36,7 @@ export type MonthSummary = {
   count: number;
 };
 
-const DATABASE_VERSION = 4;
+const DATABASE_VERSION = 5;
 
 let db: DB | null = null;
 
@@ -87,6 +87,20 @@ export async function migrateDbIfNeeded() {
       "UPDATE expenses SET method = 'cash' WHERE source = 'manual' AND merchant = 'Cash'",
     );
   }
+  if (current < 5) {
+    // Categories the user made, and the category they last picked for each merchant.
+    // Both stay on this phone; nothing here is sent to the server.
+    await d.execute(`CREATE TABLE IF NOT EXISTS categories (
+      name TEXT PRIMARY KEY COLLATE NOCASE,
+      created_at INTEGER NOT NULL
+    )`);
+    // `merchant` is normalized with merchantKey(); SavePaymentIntent.swift reads this table too.
+    await d.execute(`CREATE TABLE IF NOT EXISTS merchant_categories (
+      merchant TEXT PRIMARY KEY,
+      category TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    )`);
+  }
   await d.execute(`PRAGMA user_version = ${DATABASE_VERSION}`);
 }
 
@@ -122,6 +136,69 @@ export async function getExpense(id: number): Promise<Expense | null> {
     [id],
   );
   return (rows[0] as unknown as Expense) ?? null;
+}
+
+/** Categories the user added, oldest first. */
+export async function listCustomCategories(): Promise<string[]> {
+  const { rows } = await getDb().execute(
+    'SELECT name FROM categories ORDER BY created_at',
+  );
+  return rows.map(r => String(r.name));
+}
+
+export async function addCustomCategory(name: string) {
+  await getDb().execute(
+    'INSERT OR IGNORE INTO categories (name, created_at) VALUES (?, ?)',
+    [name, Date.now()],
+  );
+}
+
+/** Removes a category the user added; its expenses move to "Other". */
+export async function deleteCustomCategory(name: string) {
+  await getDb().transaction(async tx => {
+    await tx.execute(
+      "UPDATE expenses SET category = 'Other' WHERE category = ?",
+      [name],
+    );
+    await tx.execute('DELETE FROM merchant_categories WHERE category = ?', [
+      name,
+    ]);
+    await tx.execute('DELETE FROM categories WHERE name = ?', [name]);
+  });
+}
+
+/** "  Carrefour   MOE " → "carrefour moe". Must match merchantKey in SavePaymentIntent.swift. */
+export const merchantKey = (merchant: string) =>
+  merchant.trim().toLowerCase().replace(/\s+/g, ' ');
+
+/** The category last picked for this merchant, or null if the user never chose one. */
+export async function getMerchantCategory(
+  merchant: string,
+): Promise<string | null> {
+  const key = merchantKey(merchant);
+  if (!key) return null;
+  const { rows } = await getDb().execute(
+    'SELECT category FROM merchant_categories WHERE merchant = ?',
+    [key],
+  );
+  return rows[0] ? String(rows[0].category) : null;
+}
+
+/** Every remembered merchant → category, for matching many rows at once (statement import). */
+export async function listMerchantCategories(): Promise<Map<string, string>> {
+  const { rows } = await getDb().execute(
+    'SELECT merchant, category FROM merchant_categories',
+  );
+  return new Map(rows.map(r => [String(r.merchant), String(r.category)]));
+}
+
+export async function setMerchantCategory(merchant: string, category: string) {
+  const key = merchantKey(merchant);
+  if (!key) return;
+  await getDb().execute(
+    'INSERT OR REPLACE INTO merchant_categories (merchant, category, updated_at) VALUES (?, ?, ?)',
+    [key, category, Date.now()],
+  );
 }
 
 export async function getMeta(key: string): Promise<string | null> {
@@ -364,6 +441,22 @@ export async function listMonthSummaries(): Promise<MonthSummary[]> {
   }));
 }
 
+/** AED total per calendar day ("2026-11-03", local time) with start <= created_at < end. */
+export async function listDayTotals(
+  start: number,
+  end: number,
+): Promise<Map<string, number>> {
+  const { rows } = await getDb().execute(
+    `SELECT strftime('%Y-%m-%d', created_at / 1000, 'unixepoch', 'localtime') AS day,
+            SUM(amount) AS total
+     FROM expenses
+     WHERE currency = 'AED' AND created_at >= ? AND created_at < ?
+     GROUP BY day`,
+    [start, end],
+  );
+  return new Map(rows.map(r => [String(r.day), Number(r.total ?? 0)]));
+}
+
 export type MonthCategoryTotal = {
   month: string;
   category: string;
@@ -387,6 +480,31 @@ export async function listMonthCategoryTotals(): Promise<MonthCategoryTotal[]> {
 
 export async function deleteExpense(id: number) {
   await getDb().execute('DELETE FROM expenses WHERE id = ?', [id]);
+}
+
+/** Deletes the given expenses in one transaction. Returns rows removed. */
+export async function deleteExpensesByIds(ids: number[]): Promise<number> {
+  let removed = 0;
+  await getDb().transaction(async tx => {
+    // SQLite caps bound parameters per statement, so go in chunks.
+    for (let i = 0; i < ids.length; i += 500) {
+      const chunk = ids.slice(i, i + 500);
+      const result = await tx.execute(
+        `DELETE FROM expenses WHERE id IN (${chunk.map(() => '?').join(',')})`,
+        chunk,
+      );
+      removed += result.rowsAffected;
+    }
+  });
+  return removed;
+}
+
+/** The oldest expense's time (unix ms), or null when there are none. */
+export async function firstExpenseAt(): Promise<number | null> {
+  const { rows } = await getDb().execute(
+    'SELECT MIN(created_at) AS first FROM expenses',
+  );
+  return rows[0]?.first != null ? Number(rows[0].first) : null;
 }
 
 /** Deletes everything, or only the given [start, end) range. Returns rows removed. */

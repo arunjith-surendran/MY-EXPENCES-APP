@@ -54,20 +54,54 @@ function Icon({
   );
 }
 
-const TABS: Record<string, { icon: IconName; label: string }> = {
-  Home: { icon: 'home', label: 'Home' },
-  ThisMonth: { icon: 'calendar', label: 'Month' },
-  Setup: { icon: 'zap', label: 'Auto-log' },
-  Account: { icon: 'user', label: 'Account' },
-};
+const TABS: { name: TabName; icon: IconName; label: string }[] = [
+  { name: 'Home', icon: 'home', label: 'Home' },
+  { name: 'ThisMonth', icon: 'calendar', label: 'Month' },
+  { name: 'Setup', icon: 'zap', label: 'Auto-log' },
+  { name: 'Account', icon: 'user', label: 'Account' },
+];
+
+export type TabName = 'Home' | 'ThisMonth' | 'Setup' | 'Account';
 
 /**
  * Bottom navigation: four tabs around a raised "+" in the middle. The "+" isn't a real
- * tab; it opens the Add expense sheet on top of whichever tab is showing.
+ * tab; it opens the Add expense sheet on top of whatever is showing.
  */
-export default function TabBar({ state, navigation }: BottomTabBarProps) {
+export function BottomBar({
+  active,
+  onSelect,
+  onAdd,
+}: {
+  active: TabName | null;
+  onSelect: (tab: TabName) => void;
+  onAdd: () => void;
+}) {
   const t = useTheme();
   const insets = useSafeAreaInsets();
+
+  const item = (tab: (typeof TABS)[number]) => {
+    const focused = active === tab.name;
+    const color = focused ? t.accent : t.muted;
+    return (
+      <Pressable
+        key={tab.name}
+        onPress={() => onSelect(tab.name)}
+        accessibilityRole="tab"
+        accessibilityState={{ selected: focused }}
+        accessibilityLabel={tab.label}
+        style={styles.item}
+      >
+        <View
+          style={[styles.pill, focused && { backgroundColor: t.accentSoft }]}
+        >
+          <Icon name={tab.icon} color={color} />
+        </View>
+        <Text style={[styles.label, focused && styles.labelActive, { color }]}>
+          {tab.label}
+        </Text>
+      </Pressable>
+    );
+  };
 
   return (
     <View
@@ -80,70 +114,50 @@ export default function TabBar({ state, navigation }: BottomTabBarProps) {
         },
       ]}
     >
-      {state.routes.map((route, index) => {
-        if (route.name === 'NewExpense') {
-          return (
-            <View key={route.key} style={styles.item}>
-              <Pressable
-                onPress={() => navigation.navigate('Add')}
-                accessibilityRole="button"
-                accessibilityLabel="Add expense"
-                style={({ pressed }) => [
-                  styles.add,
-                  {
-                    backgroundColor: t.accent,
-                    borderColor: t.card,
-                    opacity: pressed ? 0.85 : 1,
-                  },
-                  glow(t.accent, 14),
-                ]}
-              >
-                <Icon name="plus" color={t.onAccent} size={26} />
-              </Pressable>
-            </View>
-          );
-        }
-
-        const tab = TABS[route.name];
-        const focused = state.index === index;
-        const color = focused ? t.accent : t.muted;
-        const onPress = () => {
-          const event = navigation.emit({
-            type: 'tabPress',
-            target: route.key,
-            canPreventDefault: true,
-          });
-          if (!focused && !event.defaultPrevented) {
-            navigation.navigate(route.name, route.params);
-          }
-        };
-
-        return (
-          <Pressable
-            key={route.key}
-            onPress={onPress}
-            accessibilityRole="tab"
-            accessibilityState={{ selected: focused }}
-            accessibilityLabel={tab.label}
-            style={styles.item}
-          >
-            <View
-              style={[
-                styles.pill,
-                focused && { backgroundColor: t.accentSoft },
-              ]}
-            >
-              <Icon name={tab.icon} color={color} />
-            </View>
-            <Text
-              style={[styles.label, focused && styles.labelActive, { color }]}
-            >
-              {tab.label}
-            </Text>
-          </Pressable>
-        );
-      })}
+      {TABS.slice(0, 2).map(item)}
+      <View style={styles.item}>
+        <Pressable
+          onPress={onAdd}
+          accessibilityRole="button"
+          accessibilityLabel="Add expense"
+          style={({ pressed }) => [
+            styles.add,
+            {
+              backgroundColor: t.accent,
+              borderColor: t.card,
+              opacity: pressed ? 0.85 : 1,
+            },
+            glow(t.accent, 14),
+          ]}
+        >
+          <Icon name="plus" color={t.onAccent} size={26} />
+        </Pressable>
+      </View>
+      {TABS.slice(2).map(item)}
     </View>
+  );
+}
+
+/** The tab navigator's bar. */
+export default function TabBar({ state, navigation }: BottomTabBarProps) {
+  const current = state.routes[state.index];
+  return (
+    <BottomBar
+      active={current.name as TabName}
+      onAdd={() => navigation.navigate('Add')}
+      onSelect={name => {
+        const route = state.routes.find(r => r.name === name);
+        if (!route) return;
+        const event = navigation.emit({
+          type: 'tabPress',
+          target: route.key,
+          canPreventDefault: true,
+        });
+        if (current.name !== name && !event.defaultPrevented) {
+          navigation.navigate(name, route.params);
+        }
+      }}
+    />
   );
 }
 

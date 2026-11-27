@@ -1,5 +1,5 @@
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -20,6 +20,7 @@ import {
   setSalary,
 } from '../lib/db';
 import { monthKey, monthLabel } from '../lib/months';
+import { categoryResolver, type CategoryResolver } from '../lib/categories';
 import { formatMoney, guessCategory } from '../lib/parse';
 import { isSalary, parseStatement, type StatementTxn } from '../lib/statement';
 import { categoryStyle, glow, useTheme } from '../lib/theme';
@@ -60,6 +61,14 @@ export default function ImportScreen({ navigation, route }: Props) {
   const [rows, setRows] = useState<Row[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [useSalary, setUseSalary] = useState(true);
+  // Merchants the user has categorised before keep that category.
+  const [resolveCategory, setResolveCategory] = useState<CategoryResolver>(
+    () => (_merchant: string, description?: string) =>
+      guessCategory(description ?? _merchant),
+  );
+  useEffect(() => {
+    categoryResolver().then(resolve => setResolveCategory(() => resolve));
+  }, []);
 
   const choose = async () => {
     try {
@@ -197,7 +206,7 @@ export default function ImportScreen({ navigation, route }: Props) {
           currency: 'AED',
           merchant: r.merchant,
           card: null,
-          category: guessCategory(r.description),
+          category: resolveCategory(r.merchant, r.description),
           source: 'statement',
           note: r.description.slice(0, 200),
           created_at: r.date,
@@ -397,7 +406,8 @@ export default function ImportScreen({ navigation, route }: Props) {
         )}
         renderItem={({ item: r }) => {
           const on = selected.has(r.key);
-          const c = categoryStyle(guessCategory(r.description), t);
+          const category = resolveCategory(r.merchant, r.description);
+          const c = categoryStyle(category, t);
           return (
             <Pressable
               onPress={() => toggle(r.key)}
@@ -427,9 +437,7 @@ export default function ImportScreen({ navigation, route }: Props) {
                     month: 'short',
                   })}
                   {' · '}
-                  <Text style={{ color: c.color }}>
-                    {guessCategory(r.description)}
-                  </Text>
+                  <Text style={{ color: c.color }}>{category}</Text>
                   {r.duplicate ? ' · already logged' : ''}
                 </Text>
               </View>
@@ -561,7 +569,6 @@ const styles = StyleSheet.create({
   amount: { fontWeight: '800', fontSize: 15 },
   footer: {
     padding: 16,
-    paddingBottom: 34,
     borderTopWidth: StyleSheet.hairlineWidth,
   },
   button: { padding: 16, borderRadius: 14, alignItems: 'center' },

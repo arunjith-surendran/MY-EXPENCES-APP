@@ -1,8 +1,10 @@
 import {
   activeMonths,
   assessMonth,
+  dailySeries,
   groupByMonth,
   groupOf,
+  weekdayAverages,
 } from '../src/lib/insights';
 
 const format = (n: number) => `AED ${Math.round(n)}`;
@@ -135,5 +137,42 @@ describe('assessMonth', () => {
     });
     expect(h?.lifestyleShare).toBe(0.5);
     expect(h?.tip).toContain('AED 200');
+  });
+});
+
+describe('dailySeries', () => {
+  it('fills every day of the month and leaves future days empty', () => {
+    const totals = new Map([
+      ['2026-11-01', 50],
+      ['2026-11-03', 20],
+    ]);
+    const s = dailySeries(totals, '2026-11', new Date(2026, 10, 3, 18));
+    expect(s).toHaveLength(30);
+    expect(s.slice(0, 4)).toEqual([50, 0, 20, null]);
+  });
+});
+
+describe('weekdayAverages', () => {
+  it('averages each weekday, counting quiet days as zero', () => {
+    // Fri 27 Nov 2026 and Fri 20 Nov: 100 and 0 → Friday average 50.
+    const totals = new Map([['2026-11-27', 100]]);
+    const avg = weekdayAverages(
+      totals,
+      new Date(2026, 10, 27),
+      new Date(2026, 10, 16), // Monday
+      12,
+    );
+    expect(avg[4]).toBe(50);
+    expect(avg[0]).toBe(0);
+  });
+
+  it('ignores days before the user started', () => {
+    const totals = new Map([['2026-11-27', 70]]);
+    const avg = weekdayAverages(
+      totals,
+      new Date(2026, 10, 27),
+      new Date(2026, 10, 27),
+    );
+    expect(avg[4]).toBe(70);
   });
 });

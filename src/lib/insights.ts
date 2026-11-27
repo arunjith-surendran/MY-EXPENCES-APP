@@ -196,3 +196,58 @@ export function assessMonth({
     detail: `${finished ? 'Spent' : 'On pace for'} ${vs}.`,
   };
 }
+
+/** "2026-11-03" for a local date. */
+export function dayKey(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(
+    2,
+    '0',
+  )}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/** Spend for each day of `month` (index 0 = the 1st). Days after `today` are null. */
+export function dailySeries(
+  dayTotals: Map<string, number>,
+  month: string,
+  today: Date,
+): (number | null)[] {
+  const [y, m] = month.split('-').map(Number);
+  const days = new Date(y, m, 0).getDate();
+  return Array.from({ length: days }, (_, i) => {
+    const d = new Date(y, m - 1, i + 1);
+    if (d > today) return null;
+    return dayTotals.get(dayKey(d)) ?? 0;
+  });
+}
+
+/**
+ * Average spend per weekday (index 0 = Monday) over the `weeks` weeks up to `today`,
+ * counting days with no spending as zero. Days before `firstDay` (when the user started)
+ * are left out so they don't drag the averages down.
+ */
+export function weekdayAverages(
+  dayTotals: Map<string, number>,
+  today: Date,
+  firstDay: Date,
+  weeks = 12,
+): number[] {
+  const sums = new Array<number>(7).fill(0);
+  const counts = new Array<number>(7).fill(0);
+  const start = new Date(
+    today.getFullYear(),
+    today.getMonth(),
+    today.getDate(),
+  );
+  for (let i = 0; i < weeks * 7; i++) {
+    const d = new Date(
+      start.getFullYear(),
+      start.getMonth(),
+      start.getDate() - i,
+    );
+    if (d < firstDay) break;
+    const w = (d.getDay() + 6) % 7; // Monday first
+    sums[w] += dayTotals.get(dayKey(d)) ?? 0;
+    counts[w] += 1;
+  }
+  return sums.map((s, i) => (counts[i] ? s / counts[i] : 0));
+}

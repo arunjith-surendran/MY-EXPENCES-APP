@@ -55,6 +55,17 @@ const light = {
     Health: '#D93B40',
     Other: '#8E8E93',
   } as Record<string, string>,
+  // Categories the user adds take one of these, picked from the name so it stays the same.
+  customCategories: [
+    '#0B7A75',
+    '#B5476B',
+    '#4A64D0',
+    '#8A6D00',
+    '#7A52C7',
+    '#2F8A3A',
+    '#C2410C',
+    '#0369A1',
+  ],
 };
 
 const dark: typeof light = {
@@ -95,6 +106,16 @@ const dark: typeof light = {
     Health: '#E5484D',
     Other: '#8E8E93',
   },
+  customCategories: [
+    '#14A39C',
+    '#D55A82',
+    '#6A84EE',
+    '#B08F10',
+    '#9772E0',
+    '#3BA64A',
+    '#E0612A',
+    '#1E8FCB',
+  ],
 };
 
 export type Theme = typeof light;
@@ -199,6 +220,22 @@ const ICONS: Record<string, string> = {
 };
 
 export function categoryStyle(category: string, t: Theme) {
-  const key = category in ICONS ? category : 'Other';
-  return { color: t.categories[key], icon: ICONS[key] };
+  if (category in ICONS) {
+    return { color: t.categories[category], icon: ICONS[category] };
+  }
+  // A category the user added: color from its name, badge from its first letters.
+  const name = category.trim();
+  if (!name) return { color: t.categories.Other, icon: ICONS.Other };
+  let hash = 0;
+  for (const ch of name.toLowerCase()) {
+    hash = (hash * 31 + ch.charCodeAt(0)) % 1_000_003;
+  }
+  const words = name.split(/\s+/);
+  const icon = (
+    words.length > 1 ? words[0][0] + words[1][0] : name.slice(0, 2)
+  ).toUpperCase();
+  return {
+    color: t.customCategories[hash % t.customCategories.length],
+    icon,
+  };
 }

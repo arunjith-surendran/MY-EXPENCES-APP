@@ -9,6 +9,7 @@ import {
   NavigationContainer,
   type LinkingOptions,
   type NavigatorScreenParams,
+  useNavigationState,
 } from '@react-navigation/native';
 import {
   createNativeStackNavigator,
@@ -16,6 +17,7 @@ import {
 } from '@react-navigation/native-stack';
 import {
   Component,
+  type ComponentProps,
   type ReactNode,
   useCallback,
   useEffect,
@@ -35,7 +37,8 @@ import AppLock from './src/components/AppLock';
 import PrivacyIntro from './src/components/PrivacyIntro';
 import { withPro } from './src/components/ProLock';
 import Splash from './src/components/Splash';
-import TabBar from './src/components/TabBar';
+import TabBar, { BottomBar, type TabName } from './src/components/TabBar';
+import UpdateGate from './src/components/UpdateGate';
 import { AuthProvider, useAuth } from './src/lib/auth/AuthContext';
 import { ConversionProvider } from './src/lib/currency';
 import { SalaryPrivacyProvider } from './src/lib/salaryPrivacy';
@@ -51,9 +54,11 @@ import AdminOfferNewScreen from './src/screens/admin/AdminOfferNewScreen';
 import AdminOffersScreen from './src/screens/admin/AdminOffersScreen';
 import AdminUserScreen from './src/screens/admin/AdminUserScreen';
 import AdminUsersScreen from './src/screens/admin/AdminUsersScreen';
+import AdminVersionsScreen from './src/screens/admin/AdminVersionsScreen';
 import type { UserFilter } from './src/screens/admin/ui';
 import AddScreen from './src/screens/AddScreen';
 import CurrencyScreen from './src/screens/CurrencyScreen';
+import DeleteScreen from './src/screens/DeleteScreen';
 import HomeScreen from './src/screens/HomeScreen';
 import MonthScreen from './src/screens/MonthScreen';
 import NotificationsScreen from './src/screens/NotificationsScreen';
@@ -92,6 +97,8 @@ export type RootStackParamList = {
   Month: { month: string };
   Salary: { month?: string } | undefined;
   Import: { month?: string } | undefined;
+  /** Bulk delete; with a month, starts on that month. */
+  Delete: { month?: string } | undefined;
   Paywall: undefined;
   Support: undefined;
   Notifications: undefined;
@@ -113,6 +120,7 @@ export type RootStackParamList = {
   AdminNotify: { userId?: string; userName?: string } | undefined;
   AdminChat: { userId: string; name: string };
   AdminFinance: undefined;
+  AdminVersions: undefined;
   Welcome: undefined;
   Privacy: undefined;
 };
@@ -133,9 +141,66 @@ function PrivacyScreen({
 }
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
+
+type StackLayout = NonNullable<
+  ComponentProps<typeof Stack.Navigator>['screenLayout']
+>;
 const Tab = createBottomTabNavigator<TabParamList>();
 
 const NoScreen = () => null;
+
+/** Wraps each stack page (except NO_BAR ones) with the bottom bar. */
+const withBottomBar: StackLayout = ({ children, route, navigation }) =>
+  NO_BAR.has(route.name) ? (
+    children
+  ) : (
+    <View style={styles.flex}>
+      <View style={styles.flex}>{children}</View>
+      <StackBottomBar
+        routeName={route.name}
+        onAdd={() => navigation.navigate('Add')}
+        onSelect={tab => navigation.navigate('Tabs', { screen: tab })}
+      />
+    </View>
+  );
+
+// Sheets, chats (they have their own composer at the bottom) and the sign-in flow go without the bottom bar.
+const NO_BAR = new Set<keyof RootStackParamList>([
+  'Tabs',
+  'Add',
+  'Paywall',
+  'AdminOfferNew',
+  'Support',
+  'AdminChat',
+  'Welcome',
+  'Privacy',
+]);
+
+/** The tab bar under a page opened on top of the tabs, so every page can jump to any tab. */
+function StackBottomBar({
+  routeName,
+  onSelect,
+  onAdd,
+}: {
+  routeName: keyof RootStackParamList;
+  onSelect: (tab: TabName) => void;
+  onAdd: () => void;
+}) {
+  // Highlight the tab this page was opened from (a past month counts as Month).
+  const underTab = useNavigationState(state => {
+    const tabs = state.routes.find(r => r.name === 'Tabs')?.state;
+    return tabs?.index != null
+      ? (tabs.routes[tabs.index].name as TabName)
+      : 'Home';
+  });
+  return (
+    <BottomBar
+      active={routeName === 'Month' ? 'ThisMonth' : underTab}
+      onAdd={onAdd}
+      onSelect={onSelect}
+    />
+  );
+}
 
 // Pro-only screens: after the free month they show a lock card that leads to the plans.
 const ProSetupScreen = withPro(SetupScreen, {
@@ -239,10 +304,11 @@ export default function App() {
             <SafeAreaProvider>
               <View style={styles.flex}>
                 <Main state={state} />
-                <AppLock ready={state === 'ready'} />
+                <AppLock ready={state === 'ready'} revealed={splashDone} />
                 {showIntro && (
                   <PrivacyIntro onDone={finishIntro} paused={!splashDone} />
                 )}
+                <UpdateGate ready={state === 'ready'} />
                 {!splashDone && <AppSplash state={state} onDone={hideSplash} />}
               </View>
             </SafeAreaProvider>
@@ -346,6 +412,7 @@ function Main({ state }: { state: 'loading' | 'ready' | Error }) {
           }}
         >
           <Stack.Navigator
+            screenLayout={withBottomBar}
             screenOptions={{
               headerShadowVisible: false,
               headerTintColor: t.accent,
@@ -376,12 +443,17 @@ function Main({ state }: { state: 'loading' | 'ready' | Error }) {
                 <Stack.Screen
                   name="Salary"
                   component={ProSalaryScreen}
-                  options={{ title: 'Salary', presentation: 'modal' }}
+                  options={{ title: 'Salary' }}
                 />
                 <Stack.Screen
                   name="Import"
                   component={ProImportScreen}
-                  options={{ title: 'Import statement', presentation: 'modal' }}
+                  options={{ title: 'Import statement' }}
+                />
+                <Stack.Screen
+                  name="Delete"
+                  component={DeleteScreen}
+                  options={{ title: 'Delete expenses' }}
                 />
                 <Stack.Screen
                   name="Paywall"
@@ -396,7 +468,7 @@ function Main({ state }: { state: 'loading' | 'ready' | Error }) {
                 <Stack.Screen
                   name="Currency"
                   component={CurrencyScreen}
-                  options={{ title: 'Show amounts in', presentation: 'modal' }}
+                  options={{ title: 'Show amounts in' }}
                 />
                 <Stack.Screen
                   name="Notifications"
@@ -444,6 +516,11 @@ function Main({ state }: { state: 'loading' | 'ready' | Error }) {
                       name="AdminFinance"
                       component={AdminFinanceScreen}
                       options={{ title: 'Money' }}
+                    />
+                    <Stack.Screen
+                      name="AdminVersions"
+                      component={AdminVersionsScreen}
+                      options={{ title: 'App version' }}
                     />
                     <Stack.Screen
                       name="AdminChat"

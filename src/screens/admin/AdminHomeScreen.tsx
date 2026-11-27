@@ -309,6 +309,12 @@ export default function AdminHomeScreen({ navigation }: Props) {
           value="Costs & payments"
           onPress={() => navigation.navigate('AdminFinance')}
         />
+        <Tile
+          icon="⬆️"
+          label="App version"
+          value="Force / suggest updates"
+          onPress={() => navigation.navigate('AdminVersions')}
+        />
       </View>
     </ScrollView>
   );

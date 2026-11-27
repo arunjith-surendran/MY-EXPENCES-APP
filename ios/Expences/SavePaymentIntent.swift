@@ -30,9 +30,12 @@ struct SavePaymentIntent: AppIntent {
 
   func perform() async throws -> some IntentResult {
     do {
-      let status = try saveRun()
+      let savedCategory = try saveRun()
+      let status = savedCategory == nil ? "duplicate" : "saved"
       RunLog.record(status: status, amount: amount, merchant: merchant, card: card, message: nil)
-      if status == "saved" { await PaymentNotice.post(amount: amount, merchant: merchant) }
+      if let savedCategory {
+        await PaymentNotice.post(amount: amount, merchant: merchant, category: savedCategory)
+      }
     } catch {
       let message = (error as? PaymentError)?.text ?? String(describing: error)
       RunLog.record(status: "failed", amount: amount, merchant: merchant, card: card, message: message)
@@ -41,8 +44,8 @@ struct SavePaymentIntent: AppIntent {
     return .result()
   }
 
-  /// Returns "saved" or "duplicate"; throws with a readable message on failure.
-  private func saveRun() throws -> String {
+  /// Returns the category it was saved under, or nil for a duplicate; throws with a readable message on failure.
+  private func saveRun() throws -> String? {
     guard let value = PaymentParser.amount(amount) else {
       throw PaymentError.message("Couldn't read the amount \"\(amount)\".")
     }
@@ -52,7 +55,7 @@ struct SavePaymentIntent: AppIntent {
     // If only Amount was filled (often with the whole Shortcut Input), keep the raw text.
     let note: String? = name.isEmpty ? amount : nil
 
-    let saved = try ExpenseStore.save(
+    return try ExpenseStore.save(
       amount: value,
       currency: PaymentParser.currency(amount),
       merchant: merchantName,
@@ -60,7 +63,6 @@ struct SavePaymentIntent: AppIntent {
       category: PaymentParser.category(merchantName),
       note: note
     )
-    return saved ? "saved" : "duplicate"
   }
 }
 
@@ -140,10 +142,30 @@ enum PaymentParser {
 enum ExpenseStore {
   private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
+  /// Same normalization as merchantKey() in src/lib/db.ts.
+  static func merchantKey(_ merchant: String) -> String {
+    merchant.lowercased().split(whereSeparator: \.isWhitespace).joined(separator: " ")
+  }
+
+  /// From the merchant_categories table (src/lib/db.ts); nil if it's missing or has no row.
+  private static func learnedCategory(_ db: OpaquePointer?, _ merchant: String) -> String? {
+    var stmt: OpaquePointer?
+    guard sqlite3_prepare_v2(
+      db, "SELECT category FROM merchant_categories WHERE merchant = ?", -1, &stmt, nil)
+      == SQLITE_OK
+    else { return nil }
+    defer { sqlite3_finalize(stmt) }
+    sqlite3_bind_text(stmt, 1, merchantKey(merchant), -1, transient)
+    guard sqlite3_step(stmt) == SQLITE_ROW, let text = sqlite3_column_text(stmt, 0) else {
+      return nil
+    }
+    return String(cString: text)
+  }
+
   static func save(
     amount: Double, currency: String, merchant: String, card: String?, category: String,
     note: String?
-  ) throws -> Bool {
+  ) throws -> String? {
     let dir = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
     let path = dir.appendingPathComponent("expenses.db").path
     var db: OpaquePointer?
@@ -188,7 +210,10 @@ enum ExpenseStore {
     sqlite3_bind_int64(dup, 3, now - 60_000)
     let isDuplicate = sqlite3_step(dup) == SQLITE_ROW && sqlite3_column_int(dup, 0) > 0
     sqlite3_finalize(dup)
-    if isDuplicate { return false }
+    if isDuplicate { return nil }
+
+    // The category the user last picked for this merchant in the app wins over the built-in guess.
+    let savedCategory = learnedCategory(db, merchant) ?? category
 
     var stmt: OpaquePointer?
     let sql = """
@@ -203,7 +228,7 @@ enum ExpenseStore {
     sqlite3_bind_text(stmt, 2, currency, -1, transient)
     sqlite3_bind_text(stmt, 3, merchant, -1, transient)
     if let card { sqlite3_bind_text(stmt, 4, card, -1, transient) } else { sqlite3_bind_null(stmt, 4) }
-    sqlite3_bind_text(stmt, 5, category, -1, transient)
+    sqlite3_bind_text(stmt, 5, savedCategory, -1, transient)
     if let note { sqlite3_bind_text(stmt, 6, note, -1, transient) } else { sqlite3_bind_null(stmt, 6) }
     sqlite3_bind_int64(stmt, 7, now)
     guard sqlite3_step(stmt) == SQLITE_DONE else {
@@ -212,7 +237,7 @@ enum ExpenseStore {
 
     // First successful automation run → the app shows "auto-logging is on".
     try exec(db, "INSERT OR IGNORE INTO meta (key, value) VALUES ('auto_log_since', '\(now)')")
-    return true
+    return savedCategory
   }
 
   private static func exec(_ db: OpaquePointer?, _ sql: String) throws {
@@ -284,7 +309,7 @@ struct ExpencesShortcuts: AppShortcutsProvider {
 /// or hasn't allowed notifications.
 @available(iOS 18.0, *)
 enum PaymentNotice {
-  static func post(amount raw: String, merchant: String?) async {
+  static func post(amount raw: String, merchant: String?, category: String) async {
     guard let value = PaymentParser.amount(raw) else { return }
     let currency = PaymentParser.currency(raw)
     let name = (merchant ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -296,7 +321,7 @@ enum PaymentNotice {
 
     let content = UNMutableNotificationContent()
     content.title = "Saved \(money(value, currency))\(name.isEmpty ? "" : " at \(name)")"
-    content.body = "\(PaymentParser.category(name.isEmpty ? "Apple Pay" : name)) · This month: \(money(monthTotal, "AED"))"
+    content.body = "\(category) · This month: \(money(monthTotal, "AED"))"
     content.sound = .default
     content.threadIdentifier = "payments"
     try? await center.add(

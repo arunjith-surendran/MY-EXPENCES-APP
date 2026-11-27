@@ -24,8 +24,12 @@ import {
   updateExpense,
 } from '../lib/db';
 import {
-  CATEGORIES,
-  type Category,
+  categoryFor,
+  isBuiltInCategory,
+  rememberCategory,
+  useCategories,
+} from '../lib/categories';
+import {
   formatMoney,
   guessCategory,
   parseAmount,
@@ -64,9 +68,13 @@ export default function AddScreen({ navigation, route }: Props) {
     return n ? String(n) : '';
   });
   const [merchant, setMerchant] = useState(params.merchant ?? '');
-  const [category, setCategory] = useState<Category>(() =>
+  const categories = useCategories();
+  const [category, setCategory] = useState<string>(() =>
     guessCategory(params.merchant ?? ''),
   );
+  // Once the user taps a category, typing the merchant no longer changes it.
+  const pickedCategory = useRef(false);
+  const [newCategory, setNewCategory] = useState<string | null>(null);
   const [note, setNote] = useState('');
   const [method, setMethod] = useState<PaymentMethod>(
     params.method === 'cash' ? 'cash' : 'card',
@@ -101,11 +109,7 @@ export default function AddScreen({ navigation, route }: Props) {
       }
       setAmount(String(e.amount));
       setMerchant(e.merchant);
-      setCategory(
-        (CATEGORIES as readonly string[]).includes(e.category)
-          ? (e.category as Category)
-          : 'Other',
-      );
+      setCategory(e.category || 'Other');
       setNote(e.note ?? '');
       setMethod(e.method === 'cash' ? 'cash' : 'card');
       setDate(new Date(e.created_at));
@@ -143,7 +147,7 @@ export default function AddScreen({ navigation, route }: Props) {
             currency: parseCurrency(params.amount),
             merchant: name,
             card: params.card?.trim() || null,
-            category: guessCategory(name),
+            category: await categoryFor(name),
             source: 'apple_pay',
             note: params.raw?.trim() || null,
           });
@@ -177,9 +181,56 @@ export default function AddScreen({ navigation, route }: Props) {
     params.via,
   ]);
 
-  const onMerchantChange = (v: string) => {
-    setMerchant(v);
-    if (!editId) setCategory(guessCategory(v));
+  // Prefill from the merchant: what the user picked for it before, else the built-in guess.
+  useEffect(() => {
+    if (editId || pickedCategory.current) return;
+    let current = true;
+    categoryFor(merchant).then(c => {
+      if (current && !pickedCategory.current) setCategory(c);
+    });
+    return () => {
+      current = false;
+    };
+  }, [merchant, editId]);
+
+  const pickCategory = (c: string) => {
+    pickedCategory.current = true;
+    setCategory(c);
+  };
+
+  const createCategory = async () => {
+    try {
+      const name = await categories.add(newCategory ?? '');
+      pickCategory(name);
+      setNewCategory(null);
+    } catch (err) {
+      Alert.alert(
+        "Couldn't add category",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  };
+
+  const confirmRemoveCategory = (name: string) => {
+    if (isBuiltInCategory(name)) return;
+    Alert.alert(
+      `Delete "${name}"?`,
+      'Expenses in this category move to Other.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () =>
+            categories
+              .remove(name)
+              .then(() => {
+                if (category === name) setCategory('Other');
+              })
+              .catch(() => {}),
+        },
+      ],
+    );
   };
 
   const save = async () => {
@@ -202,6 +253,7 @@ export default function AddScreen({ navigation, route }: Props) {
         created_at: date.getTime(),
         method,
       };
+      await rememberCategory(merchant, category).catch(() => {});
       if (editId) {
         await updateExpense(editId, fields);
       } else {
@@ -311,7 +363,7 @@ export default function AddScreen({ navigation, route }: Props) {
         <TextInput
           style={input}
           value={merchant}
-          onChangeText={onMerchantChange}
+          onChangeText={setMerchant}
           placeholder={
             method === 'cash' ? 'e.g. Grocery shop, taxi' : 'e.g. Carrefour'
           }
@@ -321,13 +373,17 @@ export default function AddScreen({ navigation, route }: Props) {
 
         <Text style={[styles.label, { color: t.muted }]}>Category</Text>
         <View style={styles.chips}>
-          {CATEGORIES.map(c => {
+          {(categories.all.includes(category)
+            ? categories.all
+            : [...categories.all, category]
+          ).map(c => {
             const active = c === category;
             const cs = categoryStyle(c, t);
             return (
               <Pressable
                 key={c}
-                onPress={() => setCategory(c)}
+                onPress={() => pickCategory(c)}
+                onLongPress={() => confirmRemoveCategory(c)}
                 style={[
                   styles.chip,
                   { borderColor: active ? cs.color : t.border },
@@ -346,7 +402,45 @@ export default function AddScreen({ navigation, route }: Props) {
               </Pressable>
             );
           })}
+          {newCategory == null && (
+            <Pressable
+              onPress={() => setNewCategory('')}
+              accessibilityRole="button"
+              style={[styles.chip, styles.dashed, { borderColor: t.accent }]}
+            >
+              <Text style={[styles.bold, { color: t.accent }]}>+ New</Text>
+            </Pressable>
+          )}
         </View>
+        {newCategory != null && (
+          <View style={styles.newRow}>
+            <TextInput
+              style={[input, styles.flex]}
+              value={newCategory}
+              onChangeText={setNewCategory}
+              onSubmitEditing={createCategory}
+              placeholder="e.g. Kids, Gym, Rent"
+              placeholderTextColor={t.muted}
+              maxLength={24}
+              autoFocus
+              returnKeyType="done"
+            />
+            <Pressable
+              onPress={createCategory}
+              style={[styles.addBtn, { backgroundColor: t.accent }]}
+            >
+              <Text style={[styles.bold, { color: t.onAccent }]}>Add</Text>
+            </Pressable>
+            <Pressable onPress={() => setNewCategory(null)} hitSlop={8}>
+              <Text style={{ color: t.muted }}>Cancel</Text>
+            </Pressable>
+          </View>
+        )}
+        {categories.custom.length > 0 && newCategory == null && (
+          <Text style={[styles.hint, { color: t.muted }]}>
+            Hold a category you added to delete it.
+          </Text>
+        )}
 
         <Text style={[styles.label, { color: t.muted }]}>Date</Text>
         <View style={styles.dateRow}>
@@ -533,6 +627,10 @@ const styles = StyleSheet.create({
   button: { marginTop: 8, padding: 16, borderRadius: 14, alignItems: 'center' },
   outline: { borderWidth: 1 },
   bold: { fontWeight: '700' },
+  dashed: { borderStyle: 'dashed' },
+  newRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  addBtn: { paddingHorizontal: 16, paddingVertical: 12, borderRadius: 12 },
+  hint: { fontSize: 12, marginTop: -4 },
   dimmed: { opacity: 0.6 },
   buttonText: { fontWeight: '800', fontSize: 16 },
 });
