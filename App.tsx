@@ -59,6 +59,7 @@ import type { UserFilter } from './src/screens/admin/ui';
 import AddScreen from './src/screens/AddScreen';
 import CurrencyScreen from './src/screens/CurrencyScreen';
 import DeleteScreen from './src/screens/DeleteScreen';
+import SearchScreen from './src/screens/SearchScreen';
 import HomeScreen from './src/screens/HomeScreen';
 import MonthScreen from './src/screens/MonthScreen';
 import NotificationsScreen from './src/screens/NotificationsScreen';
@@ -99,6 +100,8 @@ export type RootStackParamList = {
   Import: { month?: string } | undefined;
   /** Bulk delete; with a month, starts on that month. */
   Delete: { month?: string } | undefined;
+  /** Search and filter every expense; with a month, starts filtered to it. */
+  Search: { month?: string } | undefined;
   Paywall: undefined;
   Support: undefined;
   Notifications: undefined;
@@ -449,6 +452,11 @@ function Main({ state }: { state: 'loading' | 'ready' | Error }) {
                   name="Import"
                   component={ProImportScreen}
                   options={{ title: 'Import statement' }}
+                />
+                <Stack.Screen
+                  name="Search"
+                  component={SearchScreen}
+                  options={{ title: 'Search' }}
                 />
                 <Stack.Screen
                   name="Delete"

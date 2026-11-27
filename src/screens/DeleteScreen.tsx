@@ -19,92 +19,22 @@ import {
   listMonthSummaries,
   type MonthSummary,
 } from '../lib/db';
-import { monthKey, monthLabel, monthRange, shiftMonth } from '../lib/months';
+import { Chip, DayStepper } from '../components/FilterControls';
+import { monthKey, monthLabel } from '../lib/months';
 import { formatMoney } from '../lib/parse';
+import {
+  addDays,
+  type Period,
+  PERIODS,
+  periodLabel,
+  rangeFor,
+  shortDay,
+} from '../lib/periods';
 import { categoryStyle, glow, useTheme } from '../lib/theme';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Delete'>;
 
-type Period =
-  | 'today'
-  | 'yesterday'
-  | 'thisWeek'
-  | 'lastWeek'
-  | 'thisMonth'
-  | 'lastMonth'
-  | 'month'
-  | 'custom'
-  | 'all';
-
 type Method = 'any' | 'card' | 'cash';
-
-const PERIODS: [Period, string][] = [
-  ['today', 'Today'],
-  ['yesterday', 'Yesterday'],
-  ['thisWeek', 'This week'],
-  ['lastWeek', 'Last week'],
-  ['thisMonth', 'This month'],
-  ['lastMonth', 'Last month'],
-  ['month', 'Pick a month'],
-  ['custom', 'Date range'],
-  ['all', 'All time'],
-];
-
-const DAY_MS = 86_400_000;
-
-const dayStart = (d: Date) =>
-  new Date(d.getFullYear(), d.getMonth(), d.getDate());
-const addDays = (d: Date, n: number) =>
-  new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
-
-/** Monday of the week `d` is in (weeks run Monday to Sunday). */
-const weekStart = (d: Date) => addDays(dayStart(d), -((d.getDay() + 6) % 7));
-
-const shortDay = (d: Date | number) =>
-  new Date(d).toLocaleDateString('en-AE', {
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-  });
-
-/** [start, end) in unix ms for a period. */
-function rangeFor(
-  period: Period,
-  month: string,
-  from: Date,
-  to: Date,
-): { start: number; end: number } {
-  const today = dayStart(new Date());
-  switch (period) {
-    case 'today':
-      return { start: today.getTime(), end: addDays(today, 1).getTime() };
-    case 'yesterday':
-      return { start: addDays(today, -1).getTime(), end: today.getTime() };
-    case 'thisWeek': {
-      const s = weekStart(today);
-      return { start: s.getTime(), end: addDays(s, 7).getTime() };
-    }
-    case 'lastWeek': {
-      const s = addDays(weekStart(today), -7);
-      return { start: s.getTime(), end: addDays(s, 7).getTime() };
-    }
-    case 'thisMonth':
-      return monthRange(monthKey());
-    case 'lastMonth':
-      return monthRange(shiftMonth(monthKey(), -1));
-    case 'month':
-      return monthRange(month);
-    case 'custom': {
-      const [a, b] = from <= to ? [from, to] : [to, from];
-      return {
-        start: dayStart(a).getTime(),
-        end: addDays(dayStart(b), 1).getTime(),
-      };
-    }
-    case 'all':
-      return { start: 0, end: Number.MAX_SAFE_INTEGER };
-  }
-}
 
 /**
  * Delete expenses in bulk: pick a period (day, week, month, any month, a date range or
@@ -186,14 +116,7 @@ export default function DeleteScreen({ navigation, route }: Props) {
   const toggleAll = () =>
     setKept(allTicked ? new Set(matching.map(e => e.id)) : new Set());
 
-  const periodText = (() => {
-    if (period === 'all') return 'all time';
-    if (period === 'month' || period === 'thisMonth' || period === 'lastMonth')
-      return monthLabel(monthKey(new Date(range.start)));
-    if (period === 'today' || period === 'yesterday')
-      return shortDay(range.start);
-    return `${shortDay(range.start)} – ${shortDay(range.end - DAY_MS)}`;
-  })();
+  const periodText = period === 'all' ? 'all time' : periodLabel(period, range);
 
   const confirmDelete = () => {
     if (chosen.length === 0) return;
@@ -445,93 +368,6 @@ export default function DeleteScreen({ navigation, route }: Props) {
   );
 }
 
-function Chip({
-  label,
-  on,
-  color,
-  onPress,
-}: {
-  label: string;
-  on: boolean;
-  color?: string;
-  onPress: () => void;
-}) {
-  const t = useTheme();
-  const c = color ?? t.accent;
-  return (
-    <Pressable
-      onPress={onPress}
-      accessibilityRole="button"
-      accessibilityState={{ selected: on }}
-      style={[
-        styles.chip,
-        { borderColor: on ? c : t.border },
-        on && { backgroundColor: c },
-      ]}
-    >
-      <Text
-        style={on ? [styles.bold, { color: t.onAccent }] : { color: t.text }}
-      >
-        {label}
-      </Text>
-    </Pressable>
-  );
-}
-
-/** ‹ 12 Nov 2026 › — moves a day at a time, never past today or before the first expense. */
-function DayStepper({
-  label,
-  value,
-  onChange,
-  min,
-}: {
-  label: string;
-  value: Date;
-  onChange: (d: Date) => void;
-  min: number | null;
-}) {
-  const t = useTheme();
-  const today = dayStart(new Date());
-  const day = dayStart(value);
-  const atMax = day >= today;
-  const atMin =
-    min != null && day.getTime() <= dayStart(new Date(min)).getTime();
-  const step = (n: number) => onChange(addDays(day, n));
-  const arrow = (text: string, n: number, disabled: boolean) => (
-    <Pressable
-      onPress={() => step(n)}
-      onLongPress={() => step(n * 7)}
-      disabled={disabled}
-      hitSlop={6}
-      style={[
-        styles.stepBtn,
-        { borderColor: t.border, backgroundColor: t.card },
-      ]}
-    >
-      <Text
-        style={[styles.stepArrow, { color: disabled ? t.border : t.accent }]}
-      >
-        {text}
-      </Text>
-    </Pressable>
-  );
-  return (
-    <View style={styles.stepRow}>
-      <Text style={[styles.stepLabel, { color: t.muted }]}>{label}</Text>
-      {arrow('‹', -1, atMin)}
-      <View
-        style={[
-          styles.stepBox,
-          { borderColor: t.accent, backgroundColor: t.card },
-        ]}
-      >
-        <Text style={[styles.bold, { color: t.text }]}>{shortDay(day)}</Text>
-      </View>
-      {arrow('›', 1, atMax)}
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
   flex: { flex: 1 },
   header: { gap: 10, marginBottom: 10 },
@@ -545,12 +381,6 @@ const styles = StyleSheet.create({
     marginTop: 6,
   },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  chip: {
-    borderWidth: 1,
-    borderRadius: 20,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-  },
   bold: { fontWeight: '700' },
   summary: {
     flexDirection: 'row',
@@ -587,22 +417,4 @@ const styles = StyleSheet.create({
   button: { padding: 16, borderRadius: 14, alignItems: 'center' },
   buttonText: { fontWeight: '800', fontSize: 16 },
   dimmed: { opacity: 0.5 },
-  stepRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  stepLabel: { width: 40, fontWeight: '600' },
-  stepBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  stepArrow: { fontSize: 24, marginTop: -3 },
-  stepBox: {
-    flex: 1,
-    borderWidth: 1,
-    borderRadius: 12,
-    paddingVertical: 10,
-    alignItems: 'center',
-  },
 });

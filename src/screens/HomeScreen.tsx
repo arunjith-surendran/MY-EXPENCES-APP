@@ -323,6 +323,7 @@ export default function HomeScreen({ navigation }: Props) {
 
   const openMenu = useCallback(() => {
     const actions: [string, () => void][] = [
+      ['Search & filter', () => navigation.navigate('Search')],
       ['Import bank statement', () => navigation.navigate('Import')],
       ['Export all (CSV)', exportAll],
       ['Salary', () => navigation.navigate('Salary', { month: current })],
@@ -334,7 +335,7 @@ export default function HomeScreen({ navigation }: Props) {
       ActionSheetIOS.showActionSheetWithOptions(
         {
           options: [...actions.map(a => a[0]), 'Cancel'],
-          destructiveButtonIndex: 5,
+          destructiveButtonIndex: 6,
           cancelButtonIndex: actions.length,
         },
         i => actions[i]?.[1](),
@@ -353,6 +354,29 @@ export default function HomeScreen({ navigation }: Props) {
       // eslint-disable-next-line react/no-unstable-nested-components
       headerRight: () => (
         <View style={styles.headerButtons}>
+          <Pressable
+            onPress={() => navigation.navigate('Search')}
+            hitSlop={10}
+            accessibilityLabel="Search expenses"
+            style={[styles.botButton, { backgroundColor: t.accentSoft }]}
+          >
+            <Svg width={20} height={20} viewBox="0 0 24 24">
+              <Circle
+                cx={11}
+                cy={11}
+                r={7}
+                stroke={t.accent}
+                strokeWidth={2}
+                fill="none"
+              />
+              <Path
+                d="m20 20-4-4"
+                stroke={t.accent}
+                strokeWidth={2}
+                strokeLinecap="round"
+              />
+            </Svg>
+          </Pressable>
           <Pressable
             onPress={() => navigation.navigate('Notifications')}
             hitSlop={10}

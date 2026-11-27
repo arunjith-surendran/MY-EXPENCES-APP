@@ -482,6 +482,84 @@ export async function deleteExpense(id: number) {
   await getDb().execute('DELETE FROM expenses WHERE id = ?', [id]);
 }
 
+export type ExpenseSearch = {
+  /** Matches merchant, note, card or category; a number also matches the amount. */
+  text?: string;
+  start: number;
+  end: number;
+  categories?: string[];
+  method?: PaymentMethod;
+  sources?: Expense['source'][];
+  minAmount?: number;
+  maxAmount?: number;
+  sort?: 'newest' | 'oldest' | 'highest' | 'lowest';
+};
+
+const SORT_SQL: Record<NonNullable<ExpenseSearch['sort']>, string> = {
+  newest: 'created_at DESC',
+  oldest: 'created_at ASC',
+  highest: 'amount DESC, created_at DESC',
+  lowest: 'amount ASC, created_at DESC',
+};
+
+/** Expenses matching every given filter. */
+export async function searchExpenses(q: ExpenseSearch): Promise<Expense[]> {
+  const where = ['created_at >= ?', 'created_at < ?'];
+  const args: (string | number)[] = [q.start, q.end];
+  const text = q.text?.trim();
+  if (text) {
+    // Escape LIKE wildcards so "50%" or "a_b" are searched literally.
+    const like = `%${text.replace(/[\\%_]/g, c => `\\${c}`)}%`;
+    const parts = [
+      "merchant LIKE ? ESCAPE '\\'",
+      "note LIKE ? ESCAPE '\\'",
+      "card LIKE ? ESCAPE '\\'",
+      "category LIKE ? ESCAPE '\\'",
+    ];
+    args.push(like, like, like, like);
+    const n = Number(text.replace(/,/g, ''));
+    if (Number.isFinite(n) && /\d/.test(text)) {
+      parts.push('ABS(amount - ?) < 0.005');
+      args.push(n);
+    }
+    where.push(`(${parts.join(' OR ')})`);
+  }
+  if (q.categories?.length) {
+    where.push(`category IN (${q.categories.map(() => '?').join(',')})`);
+    args.push(...q.categories);
+  }
+  if (q.method) {
+    where.push('method = ?');
+    args.push(q.method);
+  }
+  if (q.sources?.length) {
+    where.push(`source IN (${q.sources.map(() => '?').join(',')})`);
+    args.push(...q.sources);
+  }
+  if (q.minAmount != null) {
+    where.push('amount >= ?');
+    args.push(q.minAmount);
+  }
+  if (q.maxAmount != null) {
+    where.push('amount <= ?');
+    args.push(q.maxAmount);
+  }
+  const { rows } = await getDb().execute(
+    `SELECT * FROM expenses WHERE ${where.join(' AND ')}
+     ORDER BY ${SORT_SQL[q.sort ?? 'newest']}`,
+    args,
+  );
+  return rows as unknown as Expense[];
+}
+
+/** Every category used by at least one expense, most used first. */
+export async function listUsedCategories(): Promise<string[]> {
+  const { rows } = await getDb().execute(
+    'SELECT category, COUNT(*) AS n FROM expenses GROUP BY category ORDER BY n DESC',
+  );
+  return rows.map(r => String(r.category));
+}
+
 /** Deletes the given expenses in one transaction. Returns rows removed. */
 export async function deleteExpensesByIds(ids: number[]): Promise<number> {
   let removed = 0;

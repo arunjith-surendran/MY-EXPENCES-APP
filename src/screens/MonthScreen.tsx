@@ -22,6 +22,7 @@ import {
   Text,
   View,
 } from 'react-native';
+import Svg, { Circle, Path } from 'react-native-svg';
 
 import type { RootStackParamList, TabProps } from '../../App';
 import BudgetCard from '../components/BudgetCard';
@@ -275,13 +276,37 @@ export default function MonthScreen({ route }: Props) {
       // React Navigation's documented pattern for header buttons.
       // eslint-disable-next-line react/no-unstable-nested-components
       headerRight: () => (
-        <Pressable
-          onPress={openMenu}
-          hitSlop={12}
-          accessibilityLabel="More options"
-        >
-          <Text style={[styles.menu, { color: t.accent }]}>•••</Text>
-        </Pressable>
+        <View style={styles.headerRow}>
+          <Pressable
+            onPress={() => navigation.navigate('Search', { month })}
+            hitSlop={12}
+            accessibilityLabel={`Search ${monthLabel(month)}`}
+          >
+            <Svg width={21} height={21} viewBox="0 0 24 24">
+              <Circle
+                cx={11}
+                cy={11}
+                r={7}
+                stroke={t.accent}
+                strokeWidth={2.2}
+                fill="none"
+              />
+              <Path
+                d="m20 20-4-4"
+                stroke={t.accent}
+                strokeWidth={2.2}
+                strokeLinecap="round"
+              />
+            </Svg>
+          </Pressable>
+          <Pressable
+            onPress={openMenu}
+            hitSlop={12}
+            accessibilityLabel="More options"
+          >
+            <Text style={[styles.menu, { color: t.accent }]}>•••</Text>
+          </Pressable>
+        </View>
       ),
     });
   }, [
@@ -809,6 +834,7 @@ const styles = StyleSheet.create({
   },
   fabText: { fontWeight: '800', fontSize: 17 },
   headerBtn: { fontSize: 16, fontWeight: '600' },
+  headerRow: { flexDirection: 'row', alignItems: 'center', gap: 18 },
   itemTicked: { borderWidth: 1.5 },
   check: {
     width: 24,
